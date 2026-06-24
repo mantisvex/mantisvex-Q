@@ -107,6 +107,7 @@ private:
     LevelData inputLevel, outputLevel;
 
     std::array<std::atomic<float>, kNumBands> dynBlendState {};  // written audio thread, read GUI thread
+    bool dynOnCache[kNumBands] {};  // updated on message thread in updateBand, read on audio thread
 
     std::atomic<bool>  parametersChanged { true };
     std::atomic<bool>  irUpdateNeeded    { false };

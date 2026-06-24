@@ -1,7 +1,13 @@
 #include "EQBand.h"
 
 static constexpr double kPi = juce::MathConstants<double>::pi;
-static constexpr double kButterworthQ[4] = { 0.7071, 0.5412, 0.6180, 0.5176 };
+// Cascaded biquad Q values for maximally-flat (Butterworth) response.
+// Row i → (i+2) biquads: row 0=4th order (24dB), row 1=6th (36dB), row 2=8th (48dB).
+static constexpr double kButterworthQ[3][4] = {
+    { 0.5412, 1.3066, 0.0,    0.0    },
+    { 0.5176, 0.7071, 1.9319, 0.0    },
+    { 0.5098, 0.6013, 0.8999, 2.5629 },
+};
 
 void EQBand::setParams(const EQBandParams& p, double sampleRate)
 {
@@ -39,7 +45,10 @@ void EQBand::computeCoefficients(double sampleRate)
         {
             numBiquads = juce::jlimit(1, kMaxCascade, params.order);
             for (int i = 0; i < numBiquads; ++i)
-                coeffs[i] = makeHighPass(freq, numBiquads == 1 ? q : kButterworthQ[i], sampleRate);
+            {
+                double qi = (numBiquads == 1) ? q : kButterworthQ[numBiquads - 2][i];
+                coeffs[i] = makeHighPass(freq, qi, sampleRate);
+            }
             break;
         }
 
@@ -47,7 +56,10 @@ void EQBand::computeCoefficients(double sampleRate)
         {
             numBiquads = juce::jlimit(1, kMaxCascade, params.order);
             for (int i = 0; i < numBiquads; ++i)
-                coeffs[i] = makeLowPass(freq, numBiquads == 1 ? q : kButterworthQ[i], sampleRate);
+            {
+                double qi = (numBiquads == 1) ? q : kButterworthQ[numBiquads - 2][i];
+                coeffs[i] = makeLowPass(freq, qi, sampleRate);
+            }
             break;
         }
 

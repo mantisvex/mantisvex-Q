@@ -283,9 +283,8 @@ void EQDisplay::drawSpectrum(juce::Graphics& g)
 
             float x  = freqToX(binFreq);
             float db = juce::jlimit(-90.f, 6.f, data[i]);
-            float y  = juce::jlimit(0.f, displayH, displayH * (1.f - (db + 90.f) / 96.f));
-            float pk = juce::jlimit(0.f, displayH,
-                           displayH * (1.f - (juce::jlimit(-90.f, 6.f, pkData[i]) + 90.f) / 96.f));
+            float y  = juce::jlimit(0.f, displayH, dbToY(db));
+            float pk = juce::jlimit(0.f, displayH, dbToY(juce::jlimit(-90.f, 6.f, pkData[i])));
 
             if (!started)
             {

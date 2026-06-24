@@ -170,8 +170,7 @@ void MantisVexQProcessor::processBlockMinPhase(float* L, float* R, int numSample
 
             // Check dynamic EQ
             float blend = 1.f;
-            bool dynOn = *apvts.getRawParameterValue("band" + juce::String(b+1) + "_dyn") > 0.5f;
-            if (dynOn)
+            if (dynOnCache[b])
             {
                 blend = dynBands[b].compute(sL, sR);
                 dynBlendState[b].store(blend, std::memory_order_relaxed);
@@ -288,10 +287,13 @@ void MantisVexQProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::M
         if (L) processBlockMinPhase(L, R && R != L ? R : L, numSamples);
     }
 
+    const float totalGain = outputGainParam->load() + currentAutoGain;
+    buffer.applyGain(juce::Decibels::decibelsToGain(totalGain));
+
+    // Capture POST-gain spectrum and output levels (includes output trim)
     if (L) spectrumPostL.pushSamples(L, numSamples);
     if (R && R != L) spectrumPostR.pushSamples(R, numSamples);
 
-    // Track output peak levels
     {
         auto peak = [&](float* ch) {
             float pk = 0.f;
@@ -303,9 +305,6 @@ void MantisVexQProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::M
         else if (L)      outputLevel.R.store(outputLevel.L.load(std::memory_order_relaxed),
                                              std::memory_order_relaxed);
     }
-
-    const float totalGain = outputGainParam->load() + currentAutoGain;
-    buffer.applyGain(juce::Decibels::decibelsToGain(totalGain));
 }
 
 //==============================================================================
@@ -410,6 +409,7 @@ void MantisVexQProcessor::updateBand(int i)
     float rel    = *apvts.getRawParameterValue(p + "dyn_rel");
     float rat    = *apvts.getRawParameterValue(p + "dyn_rat");
 
+    dynOnCache[i] = dynOn;
     if (dynOn)
         dynBands[i].prepare(bp.freq, bp.q, thrDB, atk, rel, rat, currentSampleRate);
 }
