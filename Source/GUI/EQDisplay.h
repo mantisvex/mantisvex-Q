@@ -39,7 +39,8 @@ private:
     float yToDb   (float y)    const noexcept;
 
     // Curve cache — rebuilt once per timer tick and on freq-axis zoom
-    std::array<std::array<float, 512>, 24> bandMagCache {};
+    std::array<std::array<float, 512>, 24> bandMagCache   {};
+    std::array<std::array<float, 512>, 24> bandPhaseCache {};  // degrees, per-band
     bool curveCacheDirty = true;
     void rebuildCurveCache();
 
@@ -71,6 +72,7 @@ private:
     void drawPianoRoll    (juce::Graphics& g);
     void drawCollisions   (juce::Graphics& g);
     void drawGainScaleBtn (juce::Graphics& g);
+    void drawPhaseResponse(juce::Graphics& g);
 
     MantisVexQProcessor& processor;
 
@@ -114,10 +116,12 @@ private:
     // Default filter type for newly added bands
     FilterType defaultAddType = FilterType::Bell;
 
-    // Piano roll toggle
+    // Overlay toggles
     bool showPianoRoll = false;
+    bool showPhase     = false;
     juce::Rectangle<float> pianoRollBtnBounds;
     juce::Rectangle<float> gainScaleBtnBounds;
+    juce::Rectangle<float> phaseBtnBounds;
 
     // Level meter GUI-side state (decay handled in timer)
     float mtrInL  = -90.f, mtrInR  = -90.f;

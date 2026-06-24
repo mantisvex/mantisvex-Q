@@ -41,13 +41,13 @@ private:
     juce::Slider sliderFreq, sliderGain, sliderQ;
     juce::Slider sliderDynThr, sliderDynAtk, sliderDynRel, sliderDynRat;
     juce::ComboBox comboType, comboSlope, comboChannel;
-    juce::TextButton btnEnabled, btnBypass, btnSolo, btnDyn;
+    juce::TextButton btnEnabled, btnBypass, btnSolo, btnDyn, btnScDyn;
 
     using APVTS = juce::AudioProcessorValueTreeState;
     std::unique_ptr<APVTS::SliderAttachment>   attachFreq, attachGain, attachQ;
     std::unique_ptr<APVTS::SliderAttachment>   attachDynThr, attachDynAtk, attachDynRel, attachDynRat;
     std::unique_ptr<APVTS::ComboBoxAttachment> attachType, attachSlope, attachChannel;
-    std::unique_ptr<APVTS::ButtonAttachment>   attachEnabled, attachBypass, attachDyn;
+    std::unique_ptr<APVTS::ButtonAttachment>   attachEnabled, attachBypass, attachDyn, attachScDyn;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(BandControlStrip)
 };

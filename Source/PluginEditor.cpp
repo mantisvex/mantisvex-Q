@@ -99,12 +99,13 @@ BandControlStrip::BandControlStrip(MantisVexQProcessor& p) : processor(p)
     styleBtn(btnBypass,  juce::Colour(0xffffaa22), "BYP");
     styleBtn(btnSolo,    juce::Colour(0xffff5252), "SOLO");
     styleBtn(btnDyn,     juce::Colour(0xff00ddaa), "DYN");
+    styleBtn(btnScDyn,   juce::Colour(0xff00ddaa), "SC");
 
     btnSolo.onClick = [this] {
         if (activeBand >= 0) processor.setSoloBand(activeBand, btnSolo.getToggleState());
     };
 
-    for (auto* b : { &btnEnabled, &btnBypass, &btnSolo, &btnDyn })
+    for (auto* b : { &btnEnabled, &btnBypass, &btnSolo, &btnDyn, &btnScDyn })
         addAndMakeVisible(*b);
 
     setActiveBand(-1);
@@ -151,7 +152,7 @@ void BandControlStrip::disconnectFromParams()
 {
     attachFreq.reset(); attachGain.reset(); attachQ.reset();
     attachType.reset(); attachSlope.reset(); attachChannel.reset();
-    attachEnabled.reset(); attachBypass.reset(); attachDyn.reset();
+    attachEnabled.reset(); attachBypass.reset(); attachDyn.reset(); attachScDyn.reset();
     attachDynThr.reset(); attachDynAtk.reset(); attachDynRel.reset(); attachDynRat.reset();
 }
 
@@ -171,6 +172,7 @@ void BandControlStrip::connectToParams()
     attachEnabled = std::make_unique<APVTS::ButtonAttachment>(av, px+"enabled",  btnEnabled);
     attachBypass  = std::make_unique<APVTS::ButtonAttachment>(av, px+"bypassed", btnBypass);
     attachDyn     = std::make_unique<APVTS::ButtonAttachment>(av, px+"dyn",      btnDyn);
+    attachScDyn   = std::make_unique<APVTS::ButtonAttachment>(av, px+"dyn_sc",   btnScDyn);
     attachDynThr  = std::make_unique<APVTS::SliderAttachment>(av, px+"dyn_thr",  sliderDynThr);
     attachDynAtk  = std::make_unique<APVTS::SliderAttachment>(av, px+"dyn_atk",  sliderDynAtk);
     attachDynRel  = std::make_unique<APVTS::SliderAttachment>(av, px+"dyn_rel",  sliderDynRel);
@@ -186,7 +188,7 @@ void BandControlStrip::setActiveBand(int bi)
     for (auto* c : std::initializer_list<juce::Component*>{
             &sliderFreq,&sliderGain,&sliderQ,
             &comboType,&comboSlope,&comboChannel,
-            &btnEnabled,&btnBypass,&btnSolo,&btnDyn,
+            &btnEnabled,&btnBypass,&btnSolo,&btnDyn,&btnScDyn,
             &sliderDynThr,&sliderDynAtk,&sliderDynRel,&sliderDynRat })
         c->setEnabled(has);
 
@@ -209,14 +211,17 @@ void BandControlStrip::resized()
     const int y2         = y1 + rowH;
     int bx = margin;
 
-    // 4 Toggle buttons, spread across the full control area (both rows)
+    // 5 Toggle buttons: ON, BYP, SOLO, DYN, SC (DYN + SC share last row)
     const int totalControlH = h - 8 - kTabH;
     const int totalBtnH     = 4 * btnH + 3 * btnGap;
     const int btnY          = y1 + (totalControlH - totalBtnH) / 2;
-    btnEnabled.setBounds(bx, btnY,                      btnW, btnH);
-    btnBypass.setBounds (bx, btnY + btnH + btnGap,      btnW, btnH);
-    btnSolo.setBounds   (bx, btnY + 2*(btnH+btnGap),    btnW, btnH);
-    btnDyn.setBounds    (bx, btnY + 3*(btnH+btnGap),    btnW, btnH);
+    const int scW           = 22;
+    const int dynW          = btnW - scW - 2;
+    btnEnabled.setBounds(bx, btnY,                   btnW,  btnH);
+    btnBypass.setBounds (bx, btnY + btnH + btnGap,   btnW,  btnH);
+    btnSolo.setBounds   (bx, btnY + 2*(btnH+btnGap), btnW,  btnH);
+    btnDyn.setBounds    (bx, btnY + 3*(btnH+btnGap), dynW,  btnH);
+    btnScDyn.setBounds  (bx + dynW + 2, btnY + 3*(btnH+btnGap), scW, btnH);
     bx += btnW + sectionGap;
 
     // Row 1: Freq, Gain, Q knobs + Type, Slope, Channel combos

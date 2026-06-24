@@ -78,7 +78,7 @@ private:
     void updateAllBands();
     void rebuildOversampler();
     void rebuildLinearPhaseIR();
-    void processBlockMinPhase (float* L, float* R, int numSamples);
+    void processBlockMinPhase (float* L, float* R, const float* scL, const float* scR, int numSamples);
 
     juce::UndoManager                          undoManager;
     juce::AudioProcessorValueTreeState         apvts;
@@ -108,6 +108,7 @@ private:
 
     std::array<std::atomic<float>, kNumBands> dynBlendState {};  // written audio thread, read GUI thread
     bool dynOnCache[kNumBands] {};  // updated on message thread in updateBand, read on audio thread
+    bool scOnCache [kNumBands] {};  // sidechain-for-dyn toggle, same threading model as dynOnCache
 
     std::atomic<bool>  parametersChanged { true };
     std::atomic<bool>  irUpdateNeeded    { false };

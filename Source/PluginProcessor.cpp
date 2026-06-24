@@ -51,6 +51,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout MantisVexQProcessor::createP
             juce::NormalisableRange<float>(1.f, 1000.f, 0.1f, 0.5f), 100.f));
         layout.add(std::make_unique<juce::AudioParameterFloat> (juce::ParameterID(p+"dyn_rat",  1), p+"DynRatio",
             juce::NormalisableRange<float>(1.f, 20.f, 0.01f, 0.5f), 4.f));
+        layout.add(std::make_unique<juce::AudioParameterBool>  (juce::ParameterID(p+"dyn_sc",   1), p+"DynSidechain", false));
     }
 
     layout.add(std::make_unique<juce::AudioParameterFloat> (juce::ParameterID("output_gain",   1), "Output Gain",
@@ -66,15 +67,16 @@ juce::AudioProcessorValueTreeState::ParameterLayout MantisVexQProcessor::createP
 //==============================================================================
 MantisVexQProcessor::MantisVexQProcessor()
     : AudioProcessor(BusesProperties()
-          .withInput ("Input",  juce::AudioChannelSet::stereo(), true)
-          .withOutput("Output", juce::AudioChannelSet::stereo(), true)),
+          .withInput ("Input",     juce::AudioChannelSet::stereo(), true)
+          .withInput ("Sidechain", juce::AudioChannelSet::stereo(), false)
+          .withOutput("Output",    juce::AudioChannelSet::stereo(), true)),
       apvts(*this, &undoManager, "MantisVexQ", createParameterLayout())
 {
     for (int i = 0; i < kNumBands; ++i)
     {
         juce::String p = "band" + juce::String(i + 1) + "_";
         for (auto& s : { "enabled","bypassed","freq","gain","q","type","slope","channel",
-                         "dyn","dyn_thr","dyn_atk","dyn_rel","dyn_rat" })
+                         "dyn","dyn_thr","dyn_atk","dyn_rel","dyn_rat","dyn_sc" })
             apvts.addParameterListener(p + s, this);
         soloStates[i].store(false);
     }
@@ -154,7 +156,7 @@ void MantisVexQProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 void MantisVexQProcessor::releaseResources() {}
 
 //==============================================================================
-void MantisVexQProcessor::processBlockMinPhase(float* L, float* R, int numSamples)
+void MantisVexQProcessor::processBlockMinPhase(float* L, float* R, const float* scL, const float* scR, int numSamples)
 {
     const bool anyBandSoloed = isAnySoloed();
 
@@ -162,17 +164,23 @@ void MantisVexQProcessor::processBlockMinPhase(float* L, float* R, int numSample
     {
         float sL = L[s], sR = R[s];
 
+        // Sidechain sample (falls back to main if SC bus not connected)
+        float scSL = (scL != nullptr) ? scL[s] : sL;
+        float scSR = (scR != nullptr) ? scR[s] : sR;
+
         for (int b = 0; b < kNumBands; ++b)
         {
             const auto& p = bands[b].getParams();
             if (!p.enabled || p.bypassed) continue;
             if (anyBandSoloed && !soloStates[b].load(std::memory_order_relaxed)) continue;
 
-            // Check dynamic EQ
+            // Check dynamic EQ — use sidechain signal for detection if configured
             float blend = 1.f;
             if (dynOnCache[b])
             {
-                blend = dynBands[b].compute(sL, sR);
+                float detL = scOnCache[b] ? scSL : sL;
+                float detR = scOnCache[b] ? scSR : sR;
+                blend = dynBands[b].compute(detL, detR);
                 dynBlendState[b].store(blend, std::memory_order_relaxed);
             }
 
@@ -261,11 +269,24 @@ void MantisVexQProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::M
                                             std::memory_order_relaxed);
     }
 
+    // Capture sidechain bus if connected
+    const float* scL = nullptr;
+    const float* scR = nullptr;
+    if (getBusCount(true) > 1)
+    {
+        auto scBuf = getBusBuffer(buffer, true, 1);
+        if (scBuf.getNumChannels() > 0 && scBuf.getNumSamples() > 0)
+        {
+            scL = scBuf.getReadPointer(0);
+            scR = scBuf.getNumChannels() > 1 ? scBuf.getReadPointer(1) : scL;
+        }
+    }
+
     const bool useLinPhase = linearPhasePrepared && (*linPhaseParam > 0.5f);
 
     if (useLinPhase)
     {
-        // Linear phase: run through convolution engine
+        // Linear phase: run through convolution engine (DYN/SC not supported in lin-phase mode)
         juce::dsp::AudioBlock<float> block(buffer);
         juce::dsp::ProcessContextReplacing<float> ctx(block);
         linearPhaseConv.process(ctx);
@@ -278,13 +299,13 @@ void MantisVexQProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::M
 
         float* osL = osBlock.getChannelPointer(0);
         float* osR = osBlock.getNumChannels() > 1 ? osBlock.getChannelPointer(1) : osL;
-        processBlockMinPhase(osL, osR, (int)osBlock.getNumSamples());
+        processBlockMinPhase(osL, osR, scL, scR, (int)osBlock.getNumSamples());
 
         oversampler->processSamplesDown(inputBlock);
     }
     else
     {
-        if (L) processBlockMinPhase(L, R && R != L ? R : L, numSamples);
+        if (L) processBlockMinPhase(L, R && R != L ? R : L, scL, scR, numSamples);
     }
 
     const float totalGain = outputGainParam->load() + currentAutoGain;
@@ -410,6 +431,7 @@ void MantisVexQProcessor::updateBand(int i)
     float rat    = *apvts.getRawParameterValue(p + "dyn_rat");
 
     dynOnCache[i] = dynOn;
+    scOnCache [i] = dynOn && (*apvts.getRawParameterValue(p + "dyn_sc") > 0.5f);
     if (dynOn)
         dynBands[i].prepare(bp.freq, bp.q, thrDB, atk, rel, rat, currentSampleRate);
 }

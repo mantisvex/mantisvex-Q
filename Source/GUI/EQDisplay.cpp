@@ -85,12 +85,14 @@ void EQDisplay::resized() { curveCacheDirty = true; }
 
 void EQDisplay::rebuildCurveCache()
 {
+    static constexpr float kRadToDeg = 180.f / 3.14159265358979323846f;
     const double fs = processor.getCurrentSampleRate();
     for (int b = 0; b < kNumBands; ++b)
     {
         if (!processor.getBand(b).getParams().enabled)
         {
-            bandMagCache[b].fill(1.f);
+            bandMagCache  [b].fill(1.f);
+            bandPhaseCache[b].fill(0.f);
             continue;
         }
         for (int i = 0; i < kCurvePoints; ++i)
@@ -98,7 +100,8 @@ void EQDisplay::rebuildCurveCache()
             float t    = static_cast<float>(i) / (kCurvePoints - 1);
             float freq = viewFreqMin * std::pow(viewFreqMax / viewFreqMin, t);
             auto  H    = processor.getBand(b).getFrequencyResponse(static_cast<double>(freq), fs);
-            bandMagCache[b][i] = static_cast<float>(std::abs(H));
+            bandMagCache  [b][i] = static_cast<float>(std::abs(H));
+            bandPhaseCache[b][i] = static_cast<float>(std::arg(H)) * kRadToDeg;
         }
     }
     curveCacheDirty = false;
@@ -162,6 +165,7 @@ void EQDisplay::paint(juce::Graphics& g)
     if (spectrumInitialized) drawSpectrum(g);
     drawBandFills(g);
     drawEQCurve(g);
+    if (showPhase) drawPhaseResponse(g);
     drawCollisions(g);
     drawBandNodes(g);
     if (showGhost) drawGhostNode(g);
@@ -486,6 +490,57 @@ void EQDisplay::drawEQCurve(juce::Graphics& g)
                                               juce::PathStrokeType::rounded));
 }
 
+void EQDisplay::drawPhaseResponse(juce::Graphics& g)
+{
+    const float w      = static_cast<float>(getWidth());
+    const float h      = static_cast<float>(getHeight()) - 18.f;
+    const float cy     = h * 0.5f;
+
+    // Draw ±90° and 0° reference lines
+    g.setColour(juce::Colour(0x18aa88ff));
+    g.drawHorizontalLine(static_cast<int>(cy),             0.f, w);
+    g.setColour(juce::Colour(0x0caa88ff));
+    g.drawHorizontalLine(static_cast<int>(h * 0.25f),      0.f, w);  // +90°
+    g.drawHorizontalLine(static_cast<int>(h * 0.75f),      0.f, w);  // -90°
+
+    // Axis labels
+    g.setFont(juce::Font(juce::FontOptions().withName("Consolas").withHeight(7.5f)));
+    g.setColour(juce::Colour(0x28aa88ff));
+    g.drawText("+180", (int)(w - 36.f), 1, 34, 9, juce::Justification::centredRight);
+    g.drawText(" +90", (int)(w - 36.f), (int)(h * 0.25f) - 4, 34, 9, juce::Justification::centredRight);
+    g.drawText("   0", (int)(w - 36.f), (int)(cy) - 4, 34, 9, juce::Justification::centredRight);
+    g.drawText(" -90", (int)(w - 36.f), (int)(h * 0.75f) - 4, 34, 9, juce::Justification::centredRight);
+    g.drawText("-180", (int)(w - 36.f), (int)(h - 11.f), 34, 9, juce::Justification::centredRight);
+
+    // Build combined phase curve (sum of enabled, non-bypassed band phases)
+    juce::Path curve;
+    for (int i = 0; i < kCurvePoints; ++i)
+    {
+        float x = static_cast<float>(i) / (kCurvePoints - 1) * w;
+        float totalPhase = 0.f;
+        for (int b = 0; b < kNumBands; ++b)
+        {
+            const auto& p = processor.getBand(b).getParams();
+            if (!p.enabled || p.bypassed) continue;
+            totalPhase += bandPhaseCache[b][i];
+        }
+        // Clamp to ±180° for display — wrap wrap is common but clamping is clearer for EQ use
+        totalPhase = juce::jlimit(-180.f, 180.f, totalPhase);
+        float y = cy * (1.f - totalPhase / 180.f);
+
+        if (i == 0) curve.startNewSubPath(x, y);
+        else        curve.lineTo(x, y);
+    }
+
+    if (!curve.isEmpty())
+    {
+        g.setColour(juce::Colour(0x22aa88ff));
+        g.strokePath(curve, juce::PathStrokeType(3.5f, juce::PathStrokeType::curved));
+        g.setColour(juce::Colour(0x88aa88ff));
+        g.strokePath(curve, juce::PathStrokeType(1.2f, juce::PathStrokeType::curved));
+    }
+}
+
 void EQDisplay::drawBandNodes(juce::Graphics& g)
 {
     const float dispH   = static_cast<float>(getHeight()) - 18.f;
@@ -573,7 +628,7 @@ void EQDisplay::drawBandNodes(juce::Graphics& g)
                        12, 10, juce::Justification::centred);
         }
 
-        // Dynamic EQ badge
+        // Dynamic EQ badge + GR activity ring
         bool dynOn = *processor.getAPVTS().getRawParameterValue(
             "band" + juce::String(i+1) + "_dyn") > 0.5f;
         if (dynOn)
@@ -582,6 +637,24 @@ void EQDisplay::drawBandNodes(juce::Graphics& g)
             g.setColour(juce::Colour(0xff00ddaa).withAlpha(alpha * 0.9f));
             g.drawText("D", static_cast<int>(x - r - 8.f), static_cast<int>(y - r - 3.f),
                        10, 10, juce::Justification::centred);
+
+            // GR activity ring: grows clockwise from top as blend increases toward 1
+            float blend = processor.getDynBlend(i);
+            float gr = r + 5.f;
+            // Faint full-circle outline
+            g.setColour(juce::Colour(0xff00ddaa).withAlpha(alpha * 0.14f));
+            g.drawEllipse(x - gr, y - gr, gr * 2.f, gr * 2.f, 0.8f);
+            // Solid arc proportional to blend
+            if (blend > 0.01f)
+            {
+                float startAngle = -juce::MathConstants<float>::halfPi;
+                float sweepAngle = blend * juce::MathConstants<float>::twoPi;
+                juce::Path ring;
+                ring.addArc(x - gr, y - gr, gr * 2.f, gr * 2.f,
+                            startAngle, startAngle + sweepAngle, true);
+                g.setColour(juce::Colour(0xff00ddaa).withAlpha(alpha * (0.55f + blend * 0.35f)));
+                g.strokePath(ring, juce::PathStrokeType(1.6f));
+            }
         }
     }
 }
@@ -847,6 +920,16 @@ void EQDisplay::drawGainScaleBtn(juce::Graphics& g)
     g.setColour(juce::Colour(0xff3a3a6a));
     g.drawText(scaleText, gainScaleBtnBounds.toNearestInt(), juce::Justification::centred);
 
+    // Phase response toggle — right of gain scale
+    phaseBtnBounds = juce::Rectangle<float>(58.f, gridH + 2.f, 38.f, 13.f);
+    g.setColour(showPhase ? juce::Colour(0xff0e0c1e) : juce::Colour(0xff0c0d1c));
+    g.fillRect(phaseBtnBounds);
+    g.setColour(showPhase ? juce::Colour(0xff3a2a66) : juce::Colour(0xff222240));
+    g.drawRect(phaseBtnBounds, 0.6f);
+    g.setFont(juce::Font(juce::FontOptions().withName("Consolas").withHeight(8.f)));
+    g.setColour(showPhase ? juce::Colour(0xff9977dd) : juce::Colour(0xff3a3a6a));
+    g.drawText("PHASE", phaseBtnBounds.toNearestInt(), juce::Justification::centred);
+
     // Piano roll toggle — bottom-right (avoid OUT meter, leave 12px margin)
     const float w = static_cast<float>(getWidth());
     pianoRollBtnBounds = juce::Rectangle<float>(w - 38.f, gridH + 2.f, 36.f, 13.f);
@@ -887,7 +970,7 @@ bool EQDisplay::tryAddBand(juce::Point<float> pos)
 
             processor.getUndoManager().beginNewTransaction();
             setParamNorm(prefix + "freq",    juce::jlimit(0.f, 1.f, t));
-            setParamNorm(prefix + "gain",    (gain - viewDbMin) / (viewDbMax - viewDbMin));
+            setParamNorm(prefix + "gain",    juce::jlimit(0.f, 1.f, (gain + 30.f) / 60.f));
             if (auto* p = processor.getAPVTS().getParameter(prefix + "type"))
                 p->setValueNotifyingHost(p->convertTo0to1(static_cast<float>(defaultAddType)));
             setParamNorm(prefix + "enabled", 1.0f);
@@ -948,6 +1031,12 @@ void EQDisplay::mouseDown(const juce::MouseEvent& e)
             gainScaleIndex = (gainScaleIndex + 1) % kNumGainScales;
         float half = kGainScales[gainScaleIndex];
         viewDbMin = -half; viewDbMax = half;
+        repaint();
+        return;
+    }
+    if (phaseBtnBounds.contains(pos))
+    {
+        showPhase = !showPhase;
         repaint();
         return;
     }
@@ -1023,8 +1112,8 @@ void EQDisplay::mouseDrag(const juce::MouseEvent& e)
     if (!axisLockedFreq && !filterTypeIgnoresGain(params.type))
     {
         float dbRange = viewDbMax - viewDbMin;
-        float newGain = juce::jlimit(viewDbMin, viewDbMax, dragStartGain - (dy / h) * dbRange);
-        setParamNorm(prefix + "gain", (newGain - viewDbMin) / dbRange);
+        float newGain = juce::jlimit(-30.f, 30.f, dragStartGain - (dy / h) * dbRange);
+        setParamNorm(prefix + "gain", juce::jlimit(0.f, 1.f, (newGain + 30.f) / 60.f));
     }
 
     curveCacheDirty = true;
