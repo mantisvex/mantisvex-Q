@@ -845,11 +845,14 @@ bool EQDisplay::tryAddBand(juce::Point<float> pos)
         {
             juce::String prefix = "band" + juce::String(i + 1) + "_";
             float freq = xToFreq(pos.x);
-            float gain = yToDb(pos.y);
+            float gain = filterTypeIgnoresGain(defaultAddType) ? 0.f : yToDb(pos.y);
             float t    = std::log10(freq / viewFreqMin) / std::log10(viewFreqMax / viewFreqMin);
 
+            processor.getUndoManager().beginNewTransaction();
             setParamNorm(prefix + "freq",    juce::jlimit(0.f, 1.f, t));
             setParamNorm(prefix + "gain",    (gain - viewDbMin) / (viewDbMax - viewDbMin));
+            if (auto* p = processor.getAPVTS().getParameter(prefix + "type"))
+                p->setValueNotifyingHost(p->convertTo0to1(static_cast<float>(defaultAddType)));
             setParamNorm(prefix + "enabled", 1.0f);
 
             setSelectedBand(i);
@@ -923,6 +926,8 @@ void EQDisplay::mouseDown(const juce::MouseEvent& e)
     if (e.mods.isRightButtonDown())
     {
         if (hit >= 0) { setSelectedBand(hit); showContextMenu(hit, e.getScreenPosition()); }
+        else if (pos.y < static_cast<float>(getHeight()) - 18.f)
+            showDefaultTypeMenu(e.getScreenPosition());
         return;
     }
 
@@ -1001,6 +1006,7 @@ void EQDisplay::mouseDoubleClick(const juce::MouseEvent& e)
     if (hit >= 0)
     {
         // Double-click on a node: delete it (Pro-Q style)
+        processor.getUndoManager().beginNewTransaction();
         juce::String prefix = "band" + juce::String(hit + 1) + "_";
         if (auto* p = processor.getAPVTS().getParameter(prefix + "enabled"))
             p->setValueNotifyingHost(0.f);
@@ -1086,9 +1092,28 @@ void EQDisplay::showContextMenu(int bi, juce::Point<int> screenPos)
         [safe, bi](int result) { if (safe != nullptr) safe->handleContextMenuResult(result, bi); });
 }
 
+void EQDisplay::showDefaultTypeMenu(juce::Point<int> screenPos)
+{
+    const char* typeNames[] = { "Bell","Low Shelf","High Shelf","Low Cut","High Cut",
+                                "Notch","Band Pass","All Pass","Tilt Shelf" };
+    juce::PopupMenu menu;
+    menu.addSectionHeader("Default Filter Type");
+    for (int t = 0; t < 9; ++t)
+        menu.addItem(t + 1, typeNames[t], true, static_cast<int>(defaultAddType) == t);
+
+    juce::Component::SafePointer<EQDisplay> safe(this);
+    menu.showMenuAsync(juce::PopupMenu::Options()
+                           .withTargetScreenArea({ screenPos.x, screenPos.y, 1, 1 }),
+        [safe](int result) {
+            if (safe != nullptr && result > 0)
+                safe->defaultAddType = static_cast<FilterType>(result - 1);
+        });
+}
+
 void EQDisplay::handleContextMenuResult(int result, int bi)
 {
     if (result == 0) return;
+    processor.getUndoManager().beginNewTransaction();
     juce::String prefix = "band" + juce::String(bi + 1) + "_";
     auto& apvts = processor.getAPVTS();
 

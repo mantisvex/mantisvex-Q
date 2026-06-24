@@ -453,6 +453,7 @@ MantisVexQEditor::MantisVexQEditor(MantisVexQProcessor& p)
     addAndMakeVisible(comboOversample);
 
     styleKnob(outputGainSlider, juce::Colour(0xff5c9eff), " dB");
+    outputGainSlider.setDoubleClickReturnValue(true, 0.0);
     addAndMakeVisible(outputGainSlider);
     styleLabel(outputGainLabel, "OUT GAIN");
     outputGainLabel.setColour(juce::Label::textColourId, juce::Colour(0xff50507a));
@@ -505,13 +506,21 @@ MantisVexQEditor::MantisVexQEditor(MantisVexQProcessor& p)
     infoLabel.setColour(juce::Label::textColourId, juce::Colour(0xff383858));
     infoLabel.setJustificationType(juce::Justification::centred);
     infoLabel.setText(
-        "click: add band  //  drag: freq/gain  //  scroll: Q  //  dbl-click: delete  //  ctrl+scroll: zoom dB  //  del: remove",
+        "click: add band  //  drag: freq/gain  //  scroll: Q  //  dbl-click: delete  //  right-click: options  //  del: remove",
         juce::dontSendNotification);
     addAndMakeVisible(infoLabel);
+
+    latencyLabel.setFont(juce::Font(juce::FontOptions().withName("Consolas").withHeight(8.f)));
+    latencyLabel.setColour(juce::Label::textColourId, juce::Colour(0xff444464));
+    latencyLabel.setJustificationType(juce::Justification::centred);
+    addAndMakeVisible(latencyLabel);
+
+    startTimerHz(5);
 }
 
 MantisVexQEditor::~MantisVexQEditor()
 {
+    stopTimer();
     removeKeyListener(this);
     setLookAndFeel(nullptr);
 }
@@ -523,6 +532,7 @@ bool MantisVexQEditor::keyPressed(const juce::KeyPress& key, juce::Component*)
         int sel = eqDisplay.getSelectedBand();
         if (sel >= 0)
         {
+            audioProcessor.getUndoManager().beginNewTransaction();
             juce::String prefix = "band" + juce::String(sel + 1) + "_";
             if (auto* ep = audioProcessor.getAPVTS().getParameter(prefix + "enabled"))
                 ep->setValueNotifyingHost(0.f);
@@ -538,6 +548,22 @@ bool MantisVexQEditor::keyPressed(const juce::KeyPress& key, juce::Component*)
     if (key == juce::KeyPress::escapeKey)
     { eqDisplay.setSelectedBand(-1); bandStrip.setActiveBand(-1); return true; }
     return false;
+}
+
+void MantisVexQEditor::timerCallback()
+{
+    int lat = audioProcessor.getLatencySamples();
+    if (lat > 0)
+    {
+        double ms = static_cast<double>(lat) / audioProcessor.getCurrentSampleRate() * 1000.0;
+        latencyLabel.setColour(juce::Label::textColourId, juce::Colour(0xffffaa22).withAlpha(0.60f));
+        latencyLabel.setText("+" + juce::String(juce::roundToInt(ms)) + "ms", juce::dontSendNotification);
+    }
+    else
+    {
+        latencyLabel.setColour(juce::Label::textColourId, juce::Colour(0xff444464));
+        latencyLabel.setText({}, juce::dontSendNotification);
+    }
 }
 
 void MantisVexQEditor::paint(juce::Graphics& g)
@@ -680,6 +706,7 @@ void MantisVexQEditor::resized()
 
     rx -= osW;
     comboOversample.setBounds(rx, (kTitleH - btnH) / 2, osW, btnH);
+    latencyLabel.setBounds(rx, 34, osW, kTitleH - 34);
     rx -= pad;
 
     rx -= abW;

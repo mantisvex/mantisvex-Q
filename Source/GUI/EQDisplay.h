@@ -51,7 +51,8 @@ private:
     // Interaction
     int  bandNodeAtPoint (juce::Point<float> pt) const noexcept;
     bool tryAddBand      (juce::Point<float> pos);
-    void showContextMenu (int bandIndex, juce::Point<int> screenPos);
+    void showContextMenu    (int bandIndex, juce::Point<int> screenPos);
+    void showDefaultTypeMenu(juce::Point<int> screenPos);
     void handleContextMenuResult (int result, int bandIndex);
     void setParamNorm (const juce::String& paramID, float normalised);
 
@@ -104,6 +105,9 @@ private:
     static constexpr float kGainScales[]  = { 3.f, 6.f, 12.f, 24.f, 36.f };
     static constexpr int   kNumGainScales = 5;
     int  gainScaleIndex = 3;   // default ±24 dB
+
+    // Default filter type for newly added bands
+    FilterType defaultAddType = FilterType::Bell;
 
     // Piano roll toggle
     bool showPianoRoll = false;

@@ -54,7 +54,8 @@ private:
 
 //==============================================================================
 class MantisVexQEditor : public juce::AudioProcessorEditor,
-                         private juce::KeyListener
+                         private juce::KeyListener,
+                         private juce::Timer
 {
 public:
     explicit MantisVexQEditor(MantisVexQProcessor&);
@@ -65,6 +66,7 @@ public:
 
 private:
     bool keyPressed(const juce::KeyPress& key, juce::Component*) override;
+    void timerCallback() override;
 
     MantisVexQProcessor& audioProcessor;
     MantisLookAndFeel    lnf;
@@ -86,6 +88,7 @@ private:
     juce::TextButton btnA, btnB;
 
     juce::Label infoLabel;
+    juce::Label latencyLabel;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MantisVexQEditor)
 };
