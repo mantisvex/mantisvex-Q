@@ -38,6 +38,11 @@ private:
     float dbToY   (float db)   const noexcept;
     float yToDb   (float y)    const noexcept;
 
+    // Curve cache — rebuilt once per timer tick and on freq-axis zoom
+    std::array<std::array<float, 512>, 24> bandMagCache {};
+    bool curveCacheDirty = true;
+    void rebuildCurveCache();
+
     // Drawing
     void drawBackground (juce::Graphics& g);
     void drawGrid       (juce::Graphics& g);
@@ -122,6 +127,7 @@ private:
 
     static constexpr float kNodeRadius  =  6.5f;
     static constexpr int   kCurvePoints = 512;
+    static constexpr int   kMaxBands    = 24;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(EQDisplay)
 };

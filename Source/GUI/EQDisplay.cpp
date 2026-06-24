@@ -17,6 +17,15 @@ namespace Colors {
 // Out-of-line definition required for ODR-use of static constexpr array
 constexpr float EQDisplay::kGainScales[];
 
+static juce::String freqToNoteName(float freq)
+{
+    if (freq < 16.f || freq > 25000.f) return {};
+    int midi = juce::roundToInt(12.f * std::log2(freq / 440.f) + 69.f);
+    if (midi < 0 || midi > 127) return {};
+    const char* names[] = { "C","C#","D","D#","E","F","F#","G","G#","A","A#","B" };
+    return juce::String(names[((midi % 12) + 12) % 12]) + juce::String(midi / 12 - 1);
+}
+
 EQDisplay::EQDisplay(MantisVexQProcessor& p) : processor(p)
 {
     startTimerHz(30);
@@ -68,10 +77,32 @@ void EQDisplay::timerCallback()
     decay(mtrOutL, holdOutL, toDb(ol.L.load(std::memory_order_relaxed)));
     decay(mtrOutR, holdOutR, toDb(ol.R.load(std::memory_order_relaxed)));
 
+    curveCacheDirty = true;
     repaint();
 }
 
-void EQDisplay::resized() {}
+void EQDisplay::resized() { curveCacheDirty = true; }
+
+void EQDisplay::rebuildCurveCache()
+{
+    const double fs = processor.getCurrentSampleRate();
+    for (int b = 0; b < kNumBands; ++b)
+    {
+        if (!processor.getBand(b).getParams().enabled)
+        {
+            bandMagCache[b].fill(1.f);
+            continue;
+        }
+        for (int i = 0; i < kCurvePoints; ++i)
+        {
+            float t    = static_cast<float>(i) / (kCurvePoints - 1);
+            float freq = viewFreqMin * std::pow(viewFreqMax / viewFreqMin, t);
+            auto  H    = processor.getBand(b).getFrequencyResponse(static_cast<double>(freq), fs);
+            bandMagCache[b][i] = static_cast<float>(std::abs(H));
+        }
+    }
+    curveCacheDirty = false;
+}
 
 //==============================================================================
 float EQDisplay::freqToX(float freq) const noexcept
@@ -100,6 +131,7 @@ void EQDisplay::zoomFreqAxis(float pivotX, float factor)
     float hi = pivotFreq * std::pow(viewFreqMax / pivotFreq, factor);
     viewFreqMin = juce::jlimit(10.f,    pivotFreq * 0.99f, lo);
     viewFreqMax = juce::jlimit(pivotFreq * 1.01f, 24000.f, hi);
+    curveCacheDirty = true;
 }
 
 void EQDisplay::zoomDbAxis(float factor)
@@ -117,11 +149,13 @@ void EQDisplay::resetZoom()
     viewFreqMax = 20000.f;
     viewDbMin   =   -30.f;
     viewDbMax   =    30.f;
+    curveCacheDirty = true;
 }
 
 //==============================================================================
 void EQDisplay::paint(juce::Graphics& g)
 {
+    if (curveCacheDirty) rebuildCurveCache();
     drawBackground(g);
     drawGrid(g);
     if (showPianoRoll) drawPianoRoll(g);
@@ -306,7 +340,6 @@ void EQDisplay::drawBandFills(juce::Graphics& g)
 {
     const float wf    = static_cast<float>(getWidth());
     const float hf    = static_cast<float>(getHeight());
-    const double fs   = processor.getCurrentSampleRate();
     const float zeroY = dbToY(0.f);
 
     for (int b = 0; b < kNumBands; ++b)
@@ -334,13 +367,11 @@ void EQDisplay::drawBandFills(juce::Graphics& g)
 
         for (int i = 0; i < kCurvePoints; ++i)
         {
-            float t    = static_cast<float>(i) / (kCurvePoints - 1);
-            float freq = viewFreqMin * std::pow(viewFreqMax / viewFreqMin, t);
-            float x    = t * wf;
-            auto  H    = processor.getBand(b).getFrequencyResponse(static_cast<double>(freq), fs);
-            float db   = juce::jlimit(viewDbMin - 6.f, viewDbMax + 6.f,
-                             static_cast<float>(20.0 * std::log10(std::max(std::abs(H), 1e-9))));
-            float y = dbToY(db);
+            float t   = static_cast<float>(i) / (kCurvePoints - 1);
+            float x   = t * wf;
+            float db  = juce::jlimit(viewDbMin - 6.f, viewDbMax + 6.f,
+                            20.f * std::log10(std::max(bandMagCache[b][i], 1e-9f)));
+            float y   = dbToY(db);
 
             if (std::abs(y - zeroY) > std::abs(peakY - zeroY))
                 peakY = y;
@@ -400,14 +431,10 @@ void EQDisplay::drawBandFills(juce::Graphics& g)
 
             for (int i = 0; i < kCurvePoints; ++i)
             {
-                float t    = static_cast<float>(i) / (kCurvePoints - 1);
-                float freq = viewFreqMin * std::pow(viewFreqMax / viewFreqMin, t);
-                float x    = t * wf;
-                auto  H    = processor.getBand(b).getFrequencyResponse(static_cast<double>(freq), fs);
-                float staticLinear = static_cast<float>(std::abs(H));
-                float effLinear    = 1.f + blend * (staticLinear - 1.f);
-                float effDB        = juce::jlimit(viewDbMin - 6.f, viewDbMax + 6.f,
-                                         20.f * std::log10(std::max(effLinear, 1e-9f)));
+                float x          = static_cast<float>(i) / (kCurvePoints - 1) * wf;
+                float effLinear  = 1.f + blend * (bandMagCache[b][i] - 1.f);
+                float effDB      = juce::jlimit(viewDbMin - 6.f, viewDbMax + 6.f,
+                                       20.f * std::log10(std::max(effLinear, 1e-9f)));
                 float y = dbToY(effDB);
                 if (!shadowStarted) { shadowPath.startNewSubPath(x, y); shadowStarted = true; }
                 else shadowPath.lineTo(x, y);
@@ -425,31 +452,29 @@ void EQDisplay::drawBandFills(juce::Graphics& g)
 
 void EQDisplay::drawEQCurve(juce::Graphics& g)
 {
-    const float wf   = static_cast<float>(getWidth());
-    const double fs  = processor.getCurrentSampleRate();
+    const float wf = static_cast<float>(getWidth());
 
     juce::Path curve;
-    bool started = false;
 
     for (int i = 0; i < kCurvePoints; ++i)
     {
-        float t    = static_cast<float>(i) / (kCurvePoints - 1);
-        float freq = viewFreqMin * std::pow(viewFreqMax / viewFreqMin, t);
-        float x    = t * wf;
-
-        std::complex<double> H = { 1.0, 0.0 };
+        float x        = static_cast<float>(i) / (kCurvePoints - 1) * wf;
+        float totalMag = 1.f;
         for (int b = 0; b < kNumBands; ++b)
-            H *= processor.getBand(b).getFrequencyResponse(static_cast<double>(freq), fs);
-
+        {
+            const auto& p = processor.getBand(b).getParams();
+            if (!p.enabled || p.bypassed) continue;
+            totalMag *= bandMagCache[b][i];
+        }
         float db = juce::jlimit(viewDbMin - 6.f, viewDbMax + 6.f,
-                       static_cast<float>(20.0 * std::log10(std::max(std::abs(H), 1e-9))));
-        float y = dbToY(db);
+                       20.f * std::log10(std::max(totalMag, 1e-9f)));
+        float y  = dbToY(db);
 
-        if (!started) { curve.startNewSubPath(x, y); started = true; }
-        else curve.lineTo(x, y);
+        if (i == 0) curve.startNewSubPath(x, y);
+        else        curve.lineTo(x, y);
     }
 
-    if (!started) return;
+    if (curve.isEmpty()) return;
 
     g.setColour(juce::Colour(0x12ffffff));
     g.strokePath(curve, juce::PathStrokeType(12.f, juce::PathStrokeType::curved));
@@ -576,7 +601,9 @@ void EQDisplay::drawTooltip(juce::Graphics& g)
         return juce::String(static_cast<int>(f)) + " Hz";
     };
 
+    juce::String note = freqToNoteName(params.freq);
     juce::String text = formatFreq(params.freq);
+    if (note.isNotEmpty()) text += " (" + note + ")";
     if (showGain)
         text += "   " + (params.gainDB >= 0.f ? juce::String("+") : juce::String(""))
               + juce::String(params.gainDB, 1) + " dB";
@@ -591,7 +618,7 @@ void EQDisplay::drawTooltip(juce::Graphics& g)
     }
 
     const float accentW = 3.f, pad = 9.f, th = 26.f;
-    const float tw = dynOn ? 310.f : 248.f;
+    const float tw = dynOn ? 340.f : 290.f;
 
     float nx = freqToX(params.freq);
     float ny = showGain ? dbToY(params.gainDB) : dbToY(0.f);
@@ -624,6 +651,17 @@ void EQDisplay::drawGhostNode(juce::Graphics& g)
     g.setColour(Colors::Ghost.withAlpha(0.35f));
     g.drawLine(ghostPos.x - cs, ghostPos.y, ghostPos.x + cs, ghostPos.y, 1.0f);
     g.drawLine(ghostPos.x, ghostPos.y - cs, ghostPos.x, ghostPos.y + cs, 1.0f);
+
+    juce::String note = freqToNoteName(xToFreq(ghostPos.x));
+    if (note.isNotEmpty())
+    {
+        g.setFont(juce::Font(juce::FontOptions().withName("Consolas").withHeight(9.f)));
+        g.setColour(Colors::Ghost.withAlpha(0.60f));
+        float tx = juce::jmin(ghostPos.x + kNodeRadius + 4.f,
+                              static_cast<float>(getWidth()) - 38.f);
+        g.drawText(note, (int)tx, (int)(ghostPos.y - 13.f), 36, 11,
+                   juce::Justification::centredLeft, false);
+    }
 }
 
 //==============================================================================
@@ -990,6 +1028,7 @@ void EQDisplay::mouseDrag(const juce::MouseEvent& e)
         setParamNorm(prefix + "gain", (newGain - viewDbMin) / dbRange);
     }
 
+    curveCacheDirty = true;
     repaint();
 }
 

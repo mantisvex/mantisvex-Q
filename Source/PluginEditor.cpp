@@ -124,6 +124,15 @@ void BandControlStrip::timerCallback()
         bool soloed = processor.isBandSoloed(activeBand);
         if (btnSolo.getToggleState() != soloed)
             btnSolo.setToggleState(soloed, juce::dontSendNotification);
+
+        FilterType type       = processor.getBand(activeBand).getParams().type;
+        bool gainRelevant     = !filterTypeIgnoresGain(type);
+        bool slopeRelevant    = (type == FilterType::LowCut || type == FilterType::HighCut);
+
+        sliderGain.setEnabled(gainRelevant);
+        labelGain .setEnabled(gainRelevant);
+        comboSlope.setEnabled(slopeRelevant);
+        labelSlope.setEnabled(slopeRelevant);
     }
 }
 
