@@ -68,10 +68,13 @@ private:
 
     MantisVexQProcessor& processor;
 
-    // Spectrum
+    // Spectrum — pre (always) and post (overlay when POST EQ active)
     std::array<float, SpectrumAnalyzer::kFFTSize> spectrumData{};
     std::array<float, SpectrumAnalyzer::kFFTSize> spectrumPeak{};
     bool spectrumInitialized = false;
+    std::array<float, SpectrumAnalyzer::kFFTSize> spectrumDataPost{};
+    std::array<float, SpectrumAnalyzer::kFFTSize> spectrumPeakPost{};
+    bool spectrumPostInitialized = false;
     static constexpr float kPeakDecay = 0.9985f;
 
     // Interaction state

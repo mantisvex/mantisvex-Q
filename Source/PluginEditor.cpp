@@ -463,35 +463,13 @@ MantisVexQEditor::MantisVexQEditor(MantisVexQProcessor& p)
     styleBtn(btnB, juce::Colour(0xff5c9eff), "B");
     btnA.setClickingTogglesState(false);
     btnB.setClickingTogglesState(false);
-    btnA.onClick = [this] {
-        // Save current to A if A is not active, else no-op (already on A)
-        if (audioProcessor.getActiveABSlot() != 0)
-        {
-            audioProcessor.copyToAB(0);  // capture current to A
-            // (we already are displaying A since we just captured it)
-        }
-        else
-        {
-            // On A already: copy current to A (update snapshot)
-            audioProcessor.copyToAB(0);
-        }
+    auto syncABButtons = [this] {
+        btnA.setToggleState(audioProcessor.getActiveABSlot() == 0 && audioProcessor.hasABState(0),
+                            juce::dontSendNotification);
+        btnB.setToggleState(audioProcessor.getActiveABSlot() == 1 && audioProcessor.hasABState(1),
+                            juce::dontSendNotification);
     };
-    btnB.onClick = [this] {
-        if (audioProcessor.getActiveABSlot() == 0)
-        {
-            // Switch from A to B: save current to A, load B (or init B from current)
-            audioProcessor.copyToAB(0);
-            if (!audioProcessor.hasABState(1))
-                audioProcessor.copyToAB(1);
-            audioProcessor.loadAB(1);
-        }
-        else
-        {
-            audioProcessor.copyToAB(1);
-        }
-    };
-    // Re-wire A: save current to B and load A
-    btnA.onClick = [this] {
+    btnA.onClick = [this, syncABButtons] {
         if (audioProcessor.getActiveABSlot() == 1)
         {
             audioProcessor.copyToAB(1);
@@ -503,7 +481,23 @@ MantisVexQEditor::MantisVexQEditor(MantisVexQProcessor& p)
         {
             audioProcessor.copyToAB(0);
         }
+        syncABButtons();
     };
+    btnB.onClick = [this, syncABButtons] {
+        if (audioProcessor.getActiveABSlot() == 0)
+        {
+            audioProcessor.copyToAB(0);
+            if (!audioProcessor.hasABState(1))
+                audioProcessor.copyToAB(1);
+            audioProcessor.loadAB(1);
+        }
+        else
+        {
+            audioProcessor.copyToAB(1);
+        }
+        syncABButtons();
+    };
+    syncABButtons();
     addAndMakeVisible(btnA);
     addAndMakeVisible(btnB);
 

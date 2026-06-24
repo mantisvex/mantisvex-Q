@@ -172,7 +172,10 @@ void MantisVexQProcessor::processBlockMinPhase(float* L, float* R, int numSample
             float blend = 1.f;
             bool dynOn = *apvts.getRawParameterValue("band" + juce::String(b+1) + "_dyn") > 0.5f;
             if (dynOn)
+            {
                 blend = dynBands[b].compute(sL, sR);
+                dynBlendState[b].store(blend, std::memory_order_relaxed);
+            }
 
             if (blend < 0.0001f) continue;
 
@@ -417,20 +420,25 @@ void MantisVexQProcessor::updateAllBands()
 }
 
 //==============================================================================
-bool MantisVexQProcessor::getNextSpectrumData(std::array<float, SpectrumAnalyzer::kFFTSize>& dest)
+bool MantisVexQProcessor::getNextPreSpectrumData(std::array<float, SpectrumAnalyzer::kFFTSize>& dest)
 {
-    const bool usePost = (*spectrumPostParam > 0.5f);
-    auto& sL = usePost ? spectrumPostL : spectrumPreL;
-    auto& sR = usePost ? spectrumPostR : spectrumPreR;
-
     std::array<float, SpectrumAnalyzer::kFFTSize> tmpR;
-    bool gotL = sL.getNextFFTData(dest);
-    bool gotR = sR.getNextFFTData(tmpR);
-
+    bool gotL = spectrumPreL.getNextFFTData(dest);
+    bool gotR = spectrumPreR.getNextFFTData(tmpR);
     if (gotL && gotR)
         for (int i = 0; i < SpectrumAnalyzer::kFFTSize; ++i)
             dest[i] = (dest[i] + tmpR[i]) * 0.5f;
+    return gotL || gotR;
+}
 
+bool MantisVexQProcessor::getNextPostSpectrumData(std::array<float, SpectrumAnalyzer::kFFTSize>& dest)
+{
+    std::array<float, SpectrumAnalyzer::kFFTSize> tmpR;
+    bool gotL = spectrumPostL.getNextFFTData(dest);
+    bool gotR = spectrumPostR.getNextFFTData(tmpR);
+    if (gotL && gotR)
+        for (int i = 0; i < SpectrumAnalyzer::kFFTSize; ++i)
+            dest[i] = (dest[i] + tmpR[i]) * 0.5f;
     return gotL || gotR;
 }
 

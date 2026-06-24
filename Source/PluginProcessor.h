@@ -42,11 +42,13 @@ public:
     juce::UndoManager& getUndoManager() { return undoManager; }
 
     // GUI thread accessors
-    bool getNextSpectrumData (std::array<float, SpectrumAnalyzer::kFFTSize>& dest);
+    bool getNextPreSpectrumData (std::array<float, SpectrumAnalyzer::kFFTSize>& dest);
+    bool getNextPostSpectrumData(std::array<float, SpectrumAnalyzer::kFFTSize>& dest);
     double getCurrentSampleRate() const noexcept { return currentSampleRate; }
     const EQBand& getBand (int index) const { return bands[index]; }
     ChannelMode getChannelMode (int index) const noexcept { return channelModes[index]; }
     bool isBandBypassed (int index) const noexcept;
+    float getDynBlend (int index) const noexcept { return dynBlendState[index].load(std::memory_order_relaxed); }
 
     // Peak level meters (written audio thread, read GUI thread)
     struct LevelData {
@@ -103,6 +105,8 @@ private:
     int             activeABSlot = 0;
 
     LevelData inputLevel, outputLevel;
+
+    std::array<std::atomic<float>, kNumBands> dynBlendState {};  // written audio thread, read GUI thread
 
     std::atomic<bool>  parametersChanged { true };
     std::atomic<bool>  irUpdateNeeded    { false };

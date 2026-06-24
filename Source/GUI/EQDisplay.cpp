@@ -28,7 +28,7 @@ EQDisplay::~EQDisplay() { stopTimer(); }
 void EQDisplay::timerCallback()
 {
     std::array<float, SpectrumAnalyzer::kFFTSize> newData;
-    if (processor.getNextSpectrumData(newData))
+    if (processor.getNextPreSpectrumData(newData))
     {
         for (int i = 0; i < SpectrumAnalyzer::kFFTSize; ++i)
         {
@@ -37,6 +37,16 @@ void EQDisplay::timerCallback()
             spectrumPeak[i] = std::max(spectrumPeak[i] * kPeakDecay, spectrumData[i]);
         }
         spectrumInitialized = true;
+    }
+    if (processor.getNextPostSpectrumData(newData))
+    {
+        for (int i = 0; i < SpectrumAnalyzer::kFFTSize; ++i)
+        {
+            float db = juce::Decibels::gainToDecibels(newData[i]);
+            spectrumDataPost[i] = std::max(spectrumDataPost[i] * 0.84f, db);
+            spectrumPeakPost[i] = std::max(spectrumPeakPost[i] * kPeakDecay, spectrumDataPost[i]);
+        }
+        spectrumPostInitialized = true;
     }
 
     // Decay level meters — 30 Hz, ~1.5 dB/frame fast decay, 0.1 dB/frame hold
@@ -222,57 +232,74 @@ void EQDisplay::drawSpectrum(juce::Graphics& g)
     const float displayH = static_cast<float>(getHeight()) - 18.f;
     const float nyquist  = static_cast<float>(processor.getCurrentSampleRate() * 0.5);
     const int   bins     = SpectrumAnalyzer::kFFTSize / 2;
+    const bool  showPost = *processor.getAPVTS().getRawParameterValue("spectrum_post") > 0.5f;
 
-    juce::Path fill, line, peakPath;
-    bool  started = false;
-    float lastX   = 0.f;
-
-    for (int i = 1; i < bins; ++i)
+    auto drawLayer = [&](const std::array<float, SpectrumAnalyzer::kFFTSize>& data,
+                         const std::array<float, SpectrumAnalyzer::kFFTSize>& pkData,
+                         float fillAlpha, float lineAlpha, float peakAlpha)
     {
-        float binFreq = static_cast<float>(i) * nyquist / static_cast<float>(bins);
-        if (binFreq < viewFreqMin || binFreq > viewFreqMax) continue;
+        juce::Path fill, line, peakPath;
+        bool  started = false;
+        float lastX   = 0.f;
 
-        float x  = freqToX(binFreq);
-        float db = juce::jlimit(-90.f, 6.f, spectrumData[i]);
-        float y  = juce::jlimit(0.f, displayH, displayH * (1.f - (db + 90.f) / 96.f));
-        float pk = juce::jlimit(0.f, displayH,
-                       displayH * (1.f - (juce::jlimit(-90.f, 6.f, spectrumPeak[i]) + 90.f) / 96.f));
-
-        if (!started)
+        for (int i = 1; i < bins; ++i)
         {
-            fill.startNewSubPath(x, displayH);
-            fill.lineTo(x, y);
-            line.startNewSubPath(x, y);
-            peakPath.startNewSubPath(x, pk);
-            started = true;
+            float binFreq = static_cast<float>(i) * nyquist / static_cast<float>(bins);
+            if (binFreq < viewFreqMin || binFreq > viewFreqMax) continue;
+
+            float x  = freqToX(binFreq);
+            float db = juce::jlimit(-90.f, 6.f, data[i]);
+            float y  = juce::jlimit(0.f, displayH, displayH * (1.f - (db + 90.f) / 96.f));
+            float pk = juce::jlimit(0.f, displayH,
+                           displayH * (1.f - (juce::jlimit(-90.f, 6.f, pkData[i]) + 90.f) / 96.f));
+
+            if (!started)
+            {
+                fill.startNewSubPath(x, displayH);
+                fill.lineTo(x, y);
+                line.startNewSubPath(x, y);
+                peakPath.startNewSubPath(x, pk);
+                started = true;
+            }
+            else
+            {
+                fill.lineTo(x, y);
+                line.lineTo(x, y);
+                peakPath.lineTo(x, pk);
+            }
+            lastX = x;
         }
-        else
+
+        if (!started) return;
+        fill.lineTo(lastX, displayH);
+        fill.closeSubPath();
+
+        juce::ColourGradient specGrad(
+            Colors::SpecBase.withAlpha(fillAlpha), 0.f, 0.f,
+            Colors::SpecBase.withAlpha(0.00f), 0.f, displayH, false);
+        specGrad.addColour(0.25, Colors::SpecBase.withAlpha(fillAlpha * 0.6f));
+        specGrad.addColour(0.60, Colors::SpecBase.withAlpha(fillAlpha * 0.18f));
+        g.setGradientFill(specGrad);
+        g.fillPath(fill);
+
+        g.setColour(Colors::SpecBase.withAlpha(lineAlpha));
+        g.strokePath(line, juce::PathStrokeType(0.9f, juce::PathStrokeType::curved));
+
+        if (peakAlpha > 0.f)
         {
-            fill.lineTo(x, y);
-            line.lineTo(x, y);
-            peakPath.lineTo(x, pk);
+            g.setColour(Colors::SpecPeak.withAlpha(peakAlpha));
+            g.strokePath(peakPath, juce::PathStrokeType(0.8f, juce::PathStrokeType::curved));
         }
-        lastX = x;
-    }
+    };
 
-    if (!started) return;
+    if (spectrumInitialized)
+        drawLayer(spectrumData, spectrumPeak,
+                  showPost ? 0.05f : 0.16f,
+                  showPost ? 0.14f : 0.32f,
+                  showPost ? 0.00f : 0.42f);
 
-    fill.lineTo(lastX, displayH);
-    fill.closeSubPath();
-
-    juce::ColourGradient specGrad(
-        Colors::SpecBase.withAlpha(0.16f), 0.f, 0.f,
-        Colors::SpecBase.withAlpha(0.00f), 0.f, displayH, false);
-    specGrad.addColour(0.25, Colors::SpecBase.withAlpha(0.10f));
-    specGrad.addColour(0.60, Colors::SpecBase.withAlpha(0.03f));
-    g.setGradientFill(specGrad);
-    g.fillPath(fill);
-
-    g.setColour(Colors::SpecBase.withAlpha(0.32f));
-    g.strokePath(line, juce::PathStrokeType(0.9f, juce::PathStrokeType::curved));
-
-    g.setColour(Colors::SpecPeak.withAlpha(0.42f));
-    g.strokePath(peakPath, juce::PathStrokeType(0.8f, juce::PathStrokeType::curved));
+    if (showPost && spectrumPostInitialized)
+        drawLayer(spectrumDataPost, spectrumPeakPost, 0.16f, 0.32f, 0.42f);
 }
 
 void EQDisplay::drawBandFills(juce::Graphics& g)
@@ -361,6 +388,38 @@ void EQDisplay::drawBandFills(juce::Graphics& g)
         g.setColour(col.withAlpha(lineAlpha));
         g.strokePath(curvePath, juce::PathStrokeType(
             isSelected ? 2.0f : 1.4f, juce::PathStrokeType::curved));
+
+        // Dynamic GR shadow — shows live effective position when DYN is active
+        bool dynOn = *processor.getAPVTS().getRawParameterValue(
+            "band" + juce::String(b + 1) + "_dyn") > 0.5f;
+        if (dynOn)
+        {
+            float blend = processor.getDynBlend(b);
+            juce::Path shadowPath;
+            bool shadowStarted = false;
+
+            for (int i = 0; i < kCurvePoints; ++i)
+            {
+                float t    = static_cast<float>(i) / (kCurvePoints - 1);
+                float freq = viewFreqMin * std::pow(viewFreqMax / viewFreqMin, t);
+                float x    = t * wf;
+                auto  H    = processor.getBand(b).getFrequencyResponse(static_cast<double>(freq), fs);
+                float staticLinear = static_cast<float>(std::abs(H));
+                float effLinear    = 1.f + blend * (staticLinear - 1.f);
+                float effDB        = juce::jlimit(viewDbMin - 6.f, viewDbMax + 6.f,
+                                         20.f * std::log10(std::max(effLinear, 1e-9f)));
+                float y = dbToY(effDB);
+                if (!shadowStarted) { shadowPath.startNewSubPath(x, y); shadowStarted = true; }
+                else shadowPath.lineTo(x, y);
+            }
+
+            if (shadowStarted)
+            {
+                g.setColour(juce::Colour(0xff00ddaa).withAlpha(lineAlpha * 0.80f));
+                g.strokePath(shadowPath, juce::PathStrokeType(
+                    isSelected ? 2.2f : 1.5f, juce::PathStrokeType::curved));
+            }
+        }
     }
 }
 
@@ -572,8 +631,8 @@ void EQDisplay::drawGhostNode(juce::Graphics& g)
 void EQDisplay::drawLevelMeters(juce::Graphics& g)
 {
     const float h     = static_cast<float>(getHeight()) - 18.f;
-    const float mW    = 4.f;   // each strip width
-    const float gap   = 1.5f;  // gap between L and R strips
+    const float mW    = 7.f;   // each strip width
+    const float gap   = 2.f;   // gap between L and R strips
     const float minDB = -60.f;
     const float maxDB =  6.f;
     const float range = maxDB - minDB;
