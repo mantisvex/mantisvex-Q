@@ -110,6 +110,7 @@ public:
         g.drawEllipse(cx - innerR, cy - innerR, innerR * 2.f, innerR * 2.f, 0.7f);
 
         // Pointer line + bright dot tip (MASS style)
+        if (!slider.isMouseButtonDown())
         {
             const float px = cx + (innerR - 4.f) * std::sin(angle);
             const float py = cy - (innerR - 4.f) * std::cos(angle);
@@ -119,6 +120,37 @@ public:
                        px, py, 2.0f);
             g.setColour(sliderPos > 0.001f ? accent.brighter(0.3f) : juce::Colour(0xff1e1f35));
             g.fillEllipse(px - 3.8f, py - 3.8f, 7.6f, 7.6f);
+        }
+
+        // Value text inside the inner disc while dragging
+        if (slider.isMouseButtonDown())
+        {
+            auto   suffix = slider.getTextValueSuffix();
+            double val    = slider.getValue();
+            juce::String valStr;
+
+            if      (suffix == " Hz")
+            {
+                if      (val >= 10000.0) valStr = juce::String(val / 1000.0, 1) + "k";
+                else if (val >= 1000.0)  valStr = juce::String(val / 1000.0, 2) + "k";
+                else                     valStr = juce::String((int)std::round(val));
+            }
+            else if (suffix == " dB") { valStr = (val >= 0.0 ? "+" : "") + juce::String(val, 1); }
+            else if (suffix == " ms") { valStr = val < 10.0 ? juce::String(val, 1) : juce::String((int)std::round(val)); }
+            else if (suffix == ":1")  { valStr = juce::String(val, 1); }
+            else                      { valStr = juce::String(val, 2); }
+
+            // Semi-transparent fill behind value to mask the inner glow
+            g.setColour(juce::Colour(0xcc06070e));
+            g.fillEllipse(cx - innerR + 1.f, cy - innerR + 1.f,
+                          (innerR - 1.f) * 2.f, (innerR - 1.f) * 2.f);
+
+            g.setFont(juce::Font(juce::FontOptions().withName("Consolas").withHeight(7.5f)));
+            g.setColour(accent.brighter(0.2f));
+            g.drawText(valStr,
+                       static_cast<int>(cx - innerR), static_cast<int>(cy - innerR),
+                       static_cast<int>(innerR * 2.f), static_cast<int>(innerR * 2.f),
+                       juce::Justification::centred);
         }
     }
 

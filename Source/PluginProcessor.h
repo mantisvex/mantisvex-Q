@@ -115,11 +115,18 @@ private:
     double             currentSampleRate  = 44100.0;
     float              currentAutoGain    = 0.0f;
 
-    std::atomic<float>* outputGainParam   = nullptr;
+    std::atomic<float>* outputGainParam    = nullptr;
     std::atomic<float>* autoGainParam     = nullptr;
     std::atomic<float>* spectrumPostParam = nullptr;
     std::atomic<float>* oversampleParam   = nullptr;
     std::atomic<float>* linPhaseParam     = nullptr;
+    std::atomic<float>* monitorSoloParam  = nullptr;
+
+    // Solo monitoring bandpass filter — applied to output when monitor mode + solo active
+    BiquadCoeffs monitorCoeffs {};
+    BiquadState  monitorL {}, monitorR {};
+    int          lastMonitorBand  = -1;
+    float        lastMonitorFreq  = 0.f;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MantisVexQProcessor)
 };

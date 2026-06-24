@@ -41,8 +41,18 @@ private:
     // Curve cache — rebuilt once per timer tick and on freq-axis zoom
     std::array<std::array<float, 512>, 24> bandMagCache   {};
     std::array<std::array<float, 512>, 24> bandPhaseCache {};  // degrees, per-band
+    std::array<float, 24>                  bandCenterMag  {};  // |H| at band centre, for GR readout
     bool curveCacheDirty = true;
     void rebuildCurveCache();
+
+    // Band clipboard for copy / paste
+    struct BandClipboard {
+        EQBandParams params {};
+        ChannelMode  channel  = ChannelMode::Stereo;
+        bool dynOn = false, scOn = false;
+        float dynThr = -18.f, dynAtk = 10.f, dynRel = 100.f, dynRat = 4.f;
+        bool valid = false;
+    } clipboard;
 
     // Drawing
     void drawBackground (juce::Graphics& g);
@@ -117,11 +127,13 @@ private:
     FilterType defaultAddType = FilterType::Bell;
 
     // Overlay toggles
-    bool showPianoRoll = false;
-    bool showPhase     = false;
+    bool showPianoRoll   = false;
+    bool showPhase       = false;
+    bool spectrumFrozen  = false;
     juce::Rectangle<float> pianoRollBtnBounds;
     juce::Rectangle<float> gainScaleBtnBounds;
     juce::Rectangle<float> phaseBtnBounds;
+    juce::Rectangle<float> freezeBtnBounds;
 
     // Level meter GUI-side state (decay handled in timer)
     float mtrInL  = -90.f, mtrInR  = -90.f;

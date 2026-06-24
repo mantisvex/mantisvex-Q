@@ -32,9 +32,11 @@ private:
     int activeBand = -1;
 
     // Cached layout for paint()-side value rendering
-    int valX[3] = {};
-    int valW    = 0;
-    int valY    = 0;
+    int valX[3]    = {};
+    int valW       = 0;
+    int valY       = 0;
+    int dynValX[4] = {};
+    int dynValY    = 0;
 
     juce::Label  labelFreq, labelGain, labelQ, labelType, labelSlope, labelChannel;
     juce::Label  labelDynThr, labelDynAtk, labelDynRel, labelDynRat;
@@ -76,12 +78,12 @@ private:
 
     // Global controls
     juce::TextButton btnSpecPost, btnAutoGain;
-    juce::TextButton btnLinPhase;
+    juce::TextButton btnLinPhase, btnMonitor;
     juce::ComboBox   comboOversample;
     juce::Label      outputGainLabel;
     juce::Slider     outputGainSlider;
     juce::AudioProcessorValueTreeState::SliderAttachment outputGainAttach;
-    juce::AudioProcessorValueTreeState::ButtonAttachment specPostAttach, autoGainAttach, linPhaseAttach;
+    juce::AudioProcessorValueTreeState::ButtonAttachment specPostAttach, autoGainAttach, linPhaseAttach, monitorAttach;
     juce::AudioProcessorValueTreeState::ComboBoxAttachment oversampleAttach;
 
     // A/B comparison

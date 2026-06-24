@@ -60,6 +60,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout MantisVexQProcessor::createP
     layout.add(std::make_unique<juce::AudioParameterBool>  (juce::ParameterID("spectrum_post", 1), "Spectrum Post", true));
     layout.add(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID("oversample",    1), "Oversampling",  kOSNames, 0));
     layout.add(std::make_unique<juce::AudioParameterBool>  (juce::ParameterID("lin_phase",     1), "Linear Phase",  false));
+    layout.add(std::make_unique<juce::AudioParameterBool>  (juce::ParameterID("monitor_solo",  1), "Monitor Solo",  false));
 
     return layout;
 }
@@ -80,7 +81,7 @@ MantisVexQProcessor::MantisVexQProcessor()
             apvts.addParameterListener(p + s, this);
         soloStates[i].store(false);
     }
-    for (auto& id : { "output_gain","auto_gain","spectrum_post","oversample","lin_phase" })
+    for (auto& id : { "output_gain","auto_gain","spectrum_post","oversample","lin_phase","monitor_solo" })
         apvts.addParameterListener(id, this);
 
     outputGainParam   = apvts.getRawParameterValue("output_gain");
@@ -88,6 +89,7 @@ MantisVexQProcessor::MantisVexQProcessor()
     spectrumPostParam = apvts.getRawParameterValue("spectrum_post");
     oversampleParam   = apvts.getRawParameterValue("oversample");
     linPhaseParam     = apvts.getRawParameterValue("lin_phase");
+    monitorSoloParam  = apvts.getRawParameterValue("monitor_solo");
 
     // Init A/B states as empty (will be populated on first prepareToPlay or use)
     abState[0] = juce::ValueTree();
@@ -104,7 +106,7 @@ MantisVexQProcessor::~MantisVexQProcessor()
                          "dyn","dyn_thr","dyn_atk","dyn_rel","dyn_rat" })
             apvts.removeParameterListener(p + s, this);
     }
-    for (auto& id : { "output_gain","auto_gain","spectrum_post","oversample","lin_phase" })
+    for (auto& id : { "output_gain","auto_gain","spectrum_post","oversample","lin_phase","monitor_solo" })
         apvts.removeParameterListener(id, this);
 }
 
@@ -310,6 +312,37 @@ void MantisVexQProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::M
 
     const float totalGain = outputGainParam->load() + currentAutoGain;
     buffer.applyGain(juce::Decibels::decibelsToGain(totalGain));
+
+    // Solo monitoring — bandpass at the soloed band's frequency when monitor mode is on
+    if (*monitorSoloParam > 0.5f && isAnySoloed())
+    {
+        int soloIdx = -1;
+        for (int b = 0; b < kNumBands; ++b)
+            if (soloStates[b].load(std::memory_order_relaxed) && bands[b].getParams().enabled)
+                { soloIdx = b; break; }
+
+        if (soloIdx >= 0)
+        {
+            const auto& bp = bands[soloIdx].getParams();
+            if (soloIdx != lastMonitorBand || std::abs(bp.freq - lastMonitorFreq) > 0.5f)
+            {
+                const double kPiD = juce::MathConstants<double>::pi;
+                double w0    = 2.0 * kPiD * static_cast<double>(bp.freq) / currentSampleRate;
+                double sw    = std::sin(w0), cw = std::cos(w0);
+                double q     = juce::jlimit(0.1, 10.0, static_cast<double>(bp.q));
+                double alpha = sw / (2.0 * q), a0 = 1.0 + alpha;
+                monitorCoeffs = { sw * 0.5 / a0, 0.0, -sw * 0.5 / a0, -2.0 * cw / a0, (1.0 - alpha) / a0 };
+                monitorL.reset(); monitorR.reset();
+                lastMonitorBand = soloIdx;
+                lastMonitorFreq = bp.freq;
+            }
+            for (int s = 0; s < numSamples; ++s)
+            {
+                if (L) L[s] = static_cast<float>(monitorL.process(L[s], monitorCoeffs));
+                if (R && R != L) R[s] = static_cast<float>(monitorR.process(R[s], monitorCoeffs));
+            }
+        }
+    }
 
     // Capture POST-gain spectrum and output levels (includes output trim)
     if (L) spectrumPostL.pushSamples(L, numSamples);

@@ -253,7 +253,7 @@ void BandControlStrip::resized()
 
     // Row 2: Dynamic EQ controls (Thresh, Attack, Release, Ratio)
     bx = margin + btnW + sectionGap;
-    const int dynKnobH = rowH - lh - 10;
+    const int dynKnobH = rowH - lh - 14;
     juce::Label*  dLabels[]  = { &labelDynThr, &labelDynAtk, &labelDynRel, &labelDynRat };
     juce::Slider* dSliders[] = { &sliderDynThr, &sliderDynAtk, &sliderDynRel, &sliderDynRat };
     const int dw = ctrlW;
@@ -261,8 +261,10 @@ void BandControlStrip::resized()
     {
         dLabels[k]->setBounds(bx, y2, dw, lh);
         dSliders[k]->setBounds(bx, y2 + lh, dw, dynKnobH);
+        dynValX[k] = bx;
         bx += dw + elemGap;
     }
+    dynValY = y2 + lh + dynKnobH;
 }
 
 void BandControlStrip::paint(juce::Graphics& g)
@@ -418,6 +420,38 @@ void BandControlStrip::paint(juce::Graphics& g)
         g.setColour(valCol.withAlpha(0.75f));
         g.drawText("Q " + juce::String(params.q, 2), valX[2], valY, valW, 14, juce::Justification::centred);
     }
+
+    // DYN value readouts (Thresh / Attack / Release / Ratio)
+    if (activeBand >= 0 && dynValY > 0)
+    {
+        juce::String px = "band" + juce::String(activeBand + 1) + "_";
+        bool dynOn  = *processor.getAPVTS().getRawParameterValue(px + "dyn") > 0.5f;
+        juce::Colour dynCol = dynOn ? juce::Colour(0xff00ddaa).withAlpha(0.80f)
+                                    : juce::Colour(0xff222236);
+
+        g.setFont(juce::Font(juce::FontOptions().withName("Consolas").withHeight(9.5f)));
+
+        float thrV  = *processor.getAPVTS().getRawParameterValue(px + "dyn_thr");
+        float atkV  = *processor.getAPVTS().getRawParameterValue(px + "dyn_atk");
+        float relV  = *processor.getAPVTS().getRawParameterValue(px + "dyn_rel");
+        float ratV  = *processor.getAPVTS().getRawParameterValue(px + "dyn_rat");
+
+        auto fmtMs = [](float v) -> juce::String {
+            return v < 10.f ? juce::String(v, 1) + "ms" : juce::String((int)std::round(v)) + "ms";
+        };
+
+        juce::String vals[4] = {
+            juce::String((int)std::round(thrV)) + "dB",
+            fmtMs(atkV),
+            fmtMs(relV),
+            juce::String(ratV, 1) + ":1"
+        };
+        for (int k = 0; k < 4; ++k)
+        {
+            g.setColour(dynCol);
+            g.drawText(vals[k], dynValX[k], dynValY, valW, 13, juce::Justification::centred);
+        }
+    }
 }
 
 //==============================================================================
@@ -433,6 +467,7 @@ MantisVexQEditor::MantisVexQEditor(MantisVexQProcessor& p)
       specPostAttach   (p.getAPVTS(), "spectrum_post",  btnSpecPost),
       autoGainAttach   (p.getAPVTS(), "auto_gain",      btnAutoGain),
       linPhaseAttach   (p.getAPVTS(), "lin_phase",      btnLinPhase),
+      monitorAttach    (p.getAPVTS(), "monitor_solo",   btnMonitor),
       oversampleAttach (p.getAPVTS(), "oversample",     comboOversample)
 {
     setLookAndFeel(&lnf);
@@ -455,9 +490,11 @@ MantisVexQEditor::MantisVexQEditor(MantisVexQProcessor& p)
     styleBtn(btnSpecPost,  juce::Colour(0xff5c9eff), "POST EQ");
     styleBtn(btnAutoGain,  juce::Colour(0xff8bc34a), "AUTO GAIN");
     styleBtn(btnLinPhase,  juce::Colour(0xffaa88ff), "LIN PHASE");
+    styleBtn(btnMonitor,   juce::Colour(0xffff8844), "MON SOLO");
     addAndMakeVisible(btnSpecPost);
     addAndMakeVisible(btnAutoGain);
     addAndMakeVisible(btnLinPhase);
+    addAndMakeVisible(btnMonitor);
 
     styleCombo(comboOversample);
     comboOversample.addItem("1x OS", 1);
@@ -520,7 +557,7 @@ MantisVexQEditor::MantisVexQEditor(MantisVexQProcessor& p)
     infoLabel.setColour(juce::Label::textColourId, juce::Colour(0xff383858));
     infoLabel.setJustificationType(juce::Justification::centred);
     infoLabel.setText(
-        "click: add band  //  drag: freq/gain  //  scroll: Q  //  dbl-click: delete  //  right-click: options  //  del: remove",
+        "click: add  //  drag: freq/gain  //  scroll: Q  //  dbl-click: delete  //  right-click: copy/paste  //  E: on  B: byp  D: dyn  S: solo",
         juce::dontSendNotification);
     addAndMakeVisible(infoLabel);
 
@@ -561,6 +598,32 @@ bool MantisVexQEditor::keyPressed(const juce::KeyPress& key, juce::Component*)
     { audioProcessor.getUndoManager().redo(); return true; }
     if (key == juce::KeyPress::escapeKey)
     { eqDisplay.setSelectedBand(-1); bandStrip.setActiveBand(-1); return true; }
+
+    // Per-band toggle shortcuts
+    {
+        const int sel = eqDisplay.getSelectedBand();
+        if (sel >= 0)
+        {
+            juce::String pfx = "band" + juce::String(sel + 1) + "_";
+            auto& apvts = audioProcessor.getAPVTS();
+            auto toggle = [&](const juce::String& id) {
+                if (auto* p = apvts.getParameter(pfx + id))
+                {
+                    audioProcessor.getUndoManager().beginNewTransaction();
+                    p->setValueNotifyingHost(p->getValue() > 0.5f ? 0.f : 1.f);
+                }
+            };
+            if (key == juce::KeyPress('e', 0, 0)) { toggle("enabled");  return true; }
+            if (key == juce::KeyPress('b', 0, 0)) { toggle("bypassed"); return true; }
+            if (key == juce::KeyPress('d', 0, 0)) { toggle("dyn");      return true; }
+            if (key == juce::KeyPress('s', 0, 0))
+            {
+                bool nowSoloed = !audioProcessor.isBandSoloed(sel);
+                audioProcessor.setSoloBand(sel, nowSoloed);
+                return true;
+            }
+        }
+    }
     return false;
 }
 
@@ -716,6 +779,10 @@ void MantisVexQEditor::resized()
 
     rx -= btnW;
     btnLinPhase.setBounds(rx, (kTitleH - btnH) / 2, btnW, btnH);
+    rx -= pad;
+
+    rx -= btnW;
+    btnMonitor.setBounds(rx, (kTitleH - btnH) / 2, btnW, btnH);
     rx -= pad;
 
     rx -= osW;

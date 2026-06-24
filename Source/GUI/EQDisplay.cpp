@@ -37,25 +37,28 @@ EQDisplay::~EQDisplay() { stopTimer(); }
 void EQDisplay::timerCallback()
 {
     std::array<float, SpectrumAnalyzer::kFFTSize> newData;
-    if (processor.getNextPreSpectrumData(newData))
+    if (!spectrumFrozen)
     {
-        for (int i = 0; i < SpectrumAnalyzer::kFFTSize; ++i)
+        if (processor.getNextPreSpectrumData(newData))
         {
-            float db = juce::Decibels::gainToDecibels(newData[i]);
-            spectrumData[i] = std::max(spectrumData[i] * 0.84f, db);
-            spectrumPeak[i] = std::max(spectrumPeak[i] * kPeakDecay, spectrumData[i]);
+            for (int i = 0; i < SpectrumAnalyzer::kFFTSize; ++i)
+            {
+                float db = juce::Decibels::gainToDecibels(newData[i]);
+                spectrumData[i] = std::max(spectrumData[i] * 0.84f, db);
+                spectrumPeak[i] = std::max(spectrumPeak[i] * kPeakDecay, spectrumData[i]);
+            }
+            spectrumInitialized = true;
         }
-        spectrumInitialized = true;
-    }
-    if (processor.getNextPostSpectrumData(newData))
-    {
-        for (int i = 0; i < SpectrumAnalyzer::kFFTSize; ++i)
+        if (processor.getNextPostSpectrumData(newData))
         {
-            float db = juce::Decibels::gainToDecibels(newData[i]);
-            spectrumDataPost[i] = std::max(spectrumDataPost[i] * 0.84f, db);
-            spectrumPeakPost[i] = std::max(spectrumPeakPost[i] * kPeakDecay, spectrumDataPost[i]);
+            for (int i = 0; i < SpectrumAnalyzer::kFFTSize; ++i)
+            {
+                float db = juce::Decibels::gainToDecibels(newData[i]);
+                spectrumDataPost[i] = std::max(spectrumDataPost[i] * 0.84f, db);
+                spectrumPeakPost[i] = std::max(spectrumPeakPost[i] * kPeakDecay, spectrumDataPost[i]);
+            }
+            spectrumPostInitialized = true;
         }
-        spectrumPostInitialized = true;
     }
 
     // Decay level meters — 30 Hz, ~1.5 dB/frame fast decay, 0.1 dB/frame hold
@@ -103,6 +106,10 @@ void EQDisplay::rebuildCurveCache()
             bandMagCache  [b][i] = static_cast<float>(std::abs(H));
             bandPhaseCache[b][i] = static_cast<float>(std::arg(H)) * kRadToDeg;
         }
+        // Centre-frequency magnitude for GR readout (one extra call per enabled band)
+        auto Hc = processor.getBand(b).getFrequencyResponse(
+            static_cast<double>(processor.getBand(b).getParams().freq), fs);
+        bandCenterMag[b] = static_cast<float>(std::abs(Hc));
     }
     curveCacheDirty = false;
 }
@@ -655,6 +662,19 @@ void EQDisplay::drawBandNodes(juce::Graphics& g)
                 g.setColour(juce::Colour(0xff00ddaa).withAlpha(alpha * (0.55f + blend * 0.35f)));
                 g.strokePath(ring, juce::PathStrokeType(1.6f));
             }
+            // Effective gain readout below node when partially engaged
+            if (blend > 0.02f && blend < 0.98f)
+            {
+                float fullMag = bandCenterMag[i];
+                float effMag  = 1.f + blend * (fullMag - 1.f);
+                float effDB   = 20.f * std::log10(std::max(effMag, 1e-9f));
+                juce::String readout = (effDB >= 0.f ? "+" : "") + juce::String(effDB, 1);
+                g.setFont(juce::Font(juce::FontOptions().withName("Consolas").withHeight(7.5f)));
+                g.setColour(juce::Colour(0xff00ddaa).withAlpha(alpha * 0.80f));
+                g.drawText(readout,
+                           static_cast<int>(x - 22.f), static_cast<int>(y + gr + 1.f),
+                           44, 10, juce::Justification::centred);
+            }
         }
     }
 }
@@ -920,6 +940,19 @@ void EQDisplay::drawGainScaleBtn(juce::Graphics& g)
     g.setColour(juce::Colour(0xff3a3a6a));
     g.drawText(scaleText, gainScaleBtnBounds.toNearestInt(), juce::Justification::centred);
 
+    // Freeze button — centred in label strip
+    {
+        const float fw = static_cast<float>(getWidth());
+        freezeBtnBounds = juce::Rectangle<float>(fw * 0.5f - 24.f, gridH + 2.f, 48.f, 13.f);
+        g.setColour(spectrumFrozen ? juce::Colour(0xff1a0d08) : juce::Colour(0xff0c0d1c));
+        g.fillRect(freezeBtnBounds);
+        g.setColour(spectrumFrozen ? juce::Colour(0xff664422) : juce::Colour(0xff222240));
+        g.drawRect(freezeBtnBounds, 0.6f);
+        g.setFont(juce::Font(juce::FontOptions().withName("Consolas").withHeight(8.f)));
+        g.setColour(spectrumFrozen ? juce::Colour(0xffffaa44) : juce::Colour(0xff3a3a6a));
+        g.drawText("FREEZE", freezeBtnBounds.toNearestInt(), juce::Justification::centred);
+    }
+
     // Phase response toggle — right of gain scale
     phaseBtnBounds = juce::Rectangle<float>(58.f, gridH + 2.f, 38.f, 13.f);
     g.setColour(showPhase ? juce::Colour(0xff0e0c1e) : juce::Colour(0xff0c0d1c));
@@ -1031,6 +1064,12 @@ void EQDisplay::mouseDown(const juce::MouseEvent& e)
             gainScaleIndex = (gainScaleIndex + 1) % kNumGainScales;
         float half = kGainScales[gainScaleIndex];
         viewDbMin = -half; viewDbMax = half;
+        repaint();
+        return;
+    }
+    if (freezeBtnBounds.contains(pos))
+    {
+        spectrumFrozen = !spectrumFrozen;
         repaint();
         return;
     }
@@ -1210,6 +1249,9 @@ void EQDisplay::showContextMenu(int bi, juce::Point<int> screenPos)
     menu.addSubMenu("Slope",       slopeMenu);
     menu.addSubMenu("Channel",     chanMenu);
     menu.addSeparator();
+    menu.addItem(400, "Copy Band");
+    menu.addItem(401, "Paste Band", clipboard.valid);
+    menu.addSeparator();
     menu.addItem(999,  "Delete Band");
     menu.addItem(1000, "Reset to Default");
 
@@ -1268,6 +1310,46 @@ void EQDisplay::handleContextMenuResult(int result, int bi)
     {
         if (auto* p = apvts.getParameter(prefix + "channel"))
             p->setValueNotifyingHost(p->convertTo0to1(static_cast<float>(result - 300)));
+    }
+    else if (result == 400)
+    {
+        // Copy — no undo needed, just snapshot
+        clipboard.params  = processor.getBand(bi).getParams();
+        clipboard.channel = processor.getChannelMode(bi);
+        clipboard.dynOn   = *apvts.getRawParameterValue(prefix + "dyn")    > 0.5f;
+        clipboard.scOn    = *apvts.getRawParameterValue(prefix + "dyn_sc") > 0.5f;
+        clipboard.dynThr  = *apvts.getRawParameterValue(prefix + "dyn_thr");
+        clipboard.dynAtk  = *apvts.getRawParameterValue(prefix + "dyn_atk");
+        clipboard.dynRel  = *apvts.getRawParameterValue(prefix + "dyn_rel");
+        clipboard.dynRat  = *apvts.getRawParameterValue(prefix + "dyn_rat");
+        clipboard.valid   = true;
+        return;
+    }
+    else if (result == 401 && clipboard.valid)
+    {
+        // Paste
+        auto setNorm = [&](const juce::String& id, float val) {
+            if (auto* p = apvts.getParameter(id)) p->setValueNotifyingHost(p->convertTo0to1(val));
+        };
+        auto setBool = [&](const juce::String& id, bool on) {
+            if (auto* p = apvts.getParameter(id)) p->setValueNotifyingHost(on ? 1.f : 0.f);
+        };
+        setNorm(prefix + "freq",    clipboard.params.freq);
+        setNorm(prefix + "gain",    clipboard.params.gainDB);
+        setNorm(prefix + "q",       clipboard.params.q);
+        if (auto* p = apvts.getParameter(prefix + "type"))
+            p->setValueNotifyingHost(p->convertTo0to1(static_cast<float>(clipboard.params.type)));
+        if (auto* p = apvts.getParameter(prefix + "slope"))
+            p->setValueNotifyingHost(p->convertTo0to1(static_cast<float>(clipboard.params.order - 1)));
+        if (auto* p = apvts.getParameter(prefix + "channel"))
+            p->setValueNotifyingHost(p->convertTo0to1(static_cast<float>(clipboard.channel)));
+        setBool(prefix + "dyn",    clipboard.dynOn);
+        setBool(prefix + "dyn_sc", clipboard.scOn);
+        setNorm(prefix + "dyn_thr", clipboard.dynThr);
+        setNorm(prefix + "dyn_atk", clipboard.dynAtk);
+        setNorm(prefix + "dyn_rel", clipboard.dynRel);
+        setNorm(prefix + "dyn_rat", clipboard.dynRat);
+        setBool(prefix + "enabled", true);
     }
     else if (result == 999)
     {
