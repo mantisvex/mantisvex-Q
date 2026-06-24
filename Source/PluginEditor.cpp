@@ -282,8 +282,14 @@ void BandControlStrip::paint(juce::Graphics& g)
         g.setColour(juce::Colour(0xff070810));
         g.fillRect(0.f, 0.f, w, (float)kTabH);
 
-        g.setFont(juce::Font(juce::FontOptions().withName("Consolas").withHeight(9.f)));
         const float tabW = w / 24.f;
+
+        // Helper: format freq for a compact tab label ("1k", "200", "12k")
+        auto fmtTabFreq = [](float freq) -> juce::String {
+            if (freq >= 10000.f) return juce::String((int)(freq / 1000.f + 0.5f)) + "k";
+            if (freq >= 1000.f)  return juce::String(freq / 1000.f, 1) + "k";
+            return juce::String((int)(freq + 0.5f));
+        };
 
         for (int i = 0; i < 24; ++i)
         {
@@ -295,8 +301,17 @@ void BandControlStrip::paint(juce::Graphics& g)
                     "band" + juce::String(i + 1) + "_enabled"))
                 enabled = *p > 0.5f;
 
+            float tabFreq = 1000.f;
+            if (enabled || i == activeBand)
+                if (auto* fp = processor.getAPVTS().getRawParameterValue("band" + juce::String(i + 1) + "_freq"))
+                    tabFreq = *fp;
+
             const juce::Colour bc = getBandColor(i);
             const bool isActive   = (i == activeBand);
+
+            // Upper portion for the band number, lower 8px for freq label
+            juce::Rectangle<int> numR((int)tx, 0, (int)tabW, kTabH - 8);
+            juce::Rectangle<int> fqR ((int)tx, kTabH - 9, (int)tabW, 8);
 
             if (isActive)
             {
@@ -304,20 +319,27 @@ void BandControlStrip::paint(juce::Graphics& g)
                 g.fillRect(tabR);
                 g.setColour(bc.withAlpha(0.90f));
                 g.fillRect(tx, 0.f, tabW, 2.f);
+                g.setFont(juce::Font(juce::FontOptions().withName("Consolas").withHeight(9.f)));
                 g.setColour(bc.brighter(0.4f));
-                g.drawText(juce::String(i + 1), tabR.toNearestInt(),
-                           juce::Justification::centred, false);
+                g.drawText(juce::String(i + 1), numR, juce::Justification::centred, false);
+                g.setFont(juce::Font(juce::FontOptions().withHeight(7.f)));
+                g.setColour(bc.withAlpha(0.75f));
+                g.drawText(fmtTabFreq(tabFreq), fqR, juce::Justification::centred, false);
             }
             else if (enabled)
             {
                 g.setColour(bc.withAlpha(0.07f));
                 g.fillRect(tabR);
+                g.setFont(juce::Font(juce::FontOptions().withName("Consolas").withHeight(9.f)));
                 g.setColour(bc.withAlpha(0.65f));
-                g.drawText(juce::String(i + 1), tabR.toNearestInt(),
-                           juce::Justification::centred, false);
+                g.drawText(juce::String(i + 1), numR, juce::Justification::centred, false);
+                g.setFont(juce::Font(juce::FontOptions().withHeight(7.f)));
+                g.setColour(bc.withAlpha(0.45f));
+                g.drawText(fmtTabFreq(tabFreq), fqR, juce::Justification::centred, false);
             }
             else
             {
+                g.setFont(juce::Font(juce::FontOptions().withName("Consolas").withHeight(9.f)));
                 g.setColour(juce::Colour(0xff252540));
                 g.drawText(juce::String(i + 1), tabR.toNearestInt(),
                            juce::Justification::centred, false);
@@ -468,7 +490,9 @@ MantisVexQEditor::MantisVexQEditor(MantisVexQProcessor& p)
       autoGainAttach   (p.getAPVTS(), "auto_gain",      btnAutoGain),
       linPhaseAttach   (p.getAPVTS(), "lin_phase",      btnLinPhase),
       monitorAttach    (p.getAPVTS(), "monitor_solo",   btnMonitor),
-      oversampleAttach (p.getAPVTS(), "oversample",     comboOversample)
+      deltaAttach      (p.getAPVTS(), "delta",           btnDelta),
+      oversampleAttach (p.getAPVTS(), "oversample",     comboOversample),
+      msMonitorAttach  (p.getAPVTS(), "ms_monitor",     comboMsMonitor)
 {
     setLookAndFeel(&lnf);
 
@@ -491,10 +515,12 @@ MantisVexQEditor::MantisVexQEditor(MantisVexQProcessor& p)
     styleBtn(btnAutoGain,  juce::Colour(0xff8bc34a), "AUTO GAIN");
     styleBtn(btnLinPhase,  juce::Colour(0xffaa88ff), "LIN PHASE");
     styleBtn(btnMonitor,   juce::Colour(0xffff8844), "MON SOLO");
+    styleBtn(btnDelta,     juce::Colour(0xffff4466), "DELTA");
     addAndMakeVisible(btnSpecPost);
     addAndMakeVisible(btnAutoGain);
     addAndMakeVisible(btnLinPhase);
     addAndMakeVisible(btnMonitor);
+    addAndMakeVisible(btnDelta);
 
     styleCombo(comboOversample);
     comboOversample.addItem("1x OS", 1);
@@ -502,6 +528,12 @@ MantisVexQEditor::MantisVexQEditor(MantisVexQProcessor& p)
     comboOversample.addItem("4x OS", 3);
     comboOversample.addItem("8x OS", 4);
     addAndMakeVisible(comboOversample);
+
+    styleCombo(comboMsMonitor);
+    comboMsMonitor.addItem("ST", 1);
+    comboMsMonitor.addItem("M",  2);
+    comboMsMonitor.addItem("S",  3);
+    addAndMakeVisible(comboMsMonitor);
 
     styleKnob(outputGainSlider, juce::Colour(0xff5c9eff), " dB");
     outputGainSlider.setDoubleClickReturnValue(true, 0.0);
@@ -764,10 +796,11 @@ void MantisVexQEditor::resized()
     outputGainSlider.setBounds(rx, 13, knobW, kTitleH - 14);
     rx -= pad;
 
-    // Buttons right to left: POST EQ, AUTO GAIN, LIN PHASE, OS combo, [A] [B]
-    const int btnW = 76;
-    const int osW  = 62;
-    const int abW  = 28;
+    // Buttons right to left: POST EQ, AUTO GAIN, LIN PHASE, MON SOLO, DELTA, M/S, OS combo, [A] [B]
+    const int btnW  = 72;
+    const int smW   = 48;   // small buttons (DELTA, M/S combo)
+    const int osW   = 58;
+    const int abW   = 28;
 
     rx -= btnW;
     btnSpecPost.setBounds(rx, (kTitleH - btnH) / 2, btnW, btnH);
@@ -783,6 +816,14 @@ void MantisVexQEditor::resized()
 
     rx -= btnW;
     btnMonitor.setBounds(rx, (kTitleH - btnH) / 2, btnW, btnH);
+    rx -= pad;
+
+    rx -= smW;
+    btnDelta.setBounds(rx, (kTitleH - btnH) / 2, smW, btnH);
+    rx -= pad;
+
+    rx -= smW;
+    comboMsMonitor.setBounds(rx, (kTitleH - btnH) / 2, smW, btnH);
     rx -= pad;
 
     rx -= osW;

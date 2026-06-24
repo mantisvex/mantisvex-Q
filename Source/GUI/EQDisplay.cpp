@@ -44,7 +44,10 @@ void EQDisplay::timerCallback()
             for (int i = 0; i < SpectrumAnalyzer::kFFTSize; ++i)
             {
                 float db = juce::Decibels::gainToDecibels(newData[i]);
-                spectrumData[i] = std::max(spectrumData[i] * 0.84f, db);
+                if (spectrumAvg)
+                    spectrumData[i] = spectrumData[i] * 0.965f + 0.035f * db;  // slow exponential avg
+                else
+                    spectrumData[i] = std::max(spectrumData[i] * 0.84f, db);   // peak envelope
                 spectrumPeak[i] = std::max(spectrumPeak[i] * kPeakDecay, spectrumData[i]);
             }
             spectrumInitialized = true;
@@ -54,7 +57,10 @@ void EQDisplay::timerCallback()
             for (int i = 0; i < SpectrumAnalyzer::kFFTSize; ++i)
             {
                 float db = juce::Decibels::gainToDecibels(newData[i]);
-                spectrumDataPost[i] = std::max(spectrumDataPost[i] * 0.84f, db);
+                if (spectrumAvg)
+                    spectrumDataPost[i] = spectrumDataPost[i] * 0.965f + 0.035f * db;
+                else
+                    spectrumDataPost[i] = std::max(spectrumDataPost[i] * 0.84f, db);
                 spectrumPeakPost[i] = std::max(spectrumPeakPost[i] * kPeakDecay, spectrumDataPost[i]);
             }
             spectrumPostInitialized = true;
@@ -79,6 +85,12 @@ void EQDisplay::timerCallback()
     decay(mtrInR,  holdInR,  toDb(il.R.load(std::memory_order_relaxed)));
     decay(mtrOutL, holdOutL, toDb(ol.L.load(std::memory_order_relaxed)));
     decay(mtrOutR, holdOutR, toDb(ol.R.load(std::memory_order_relaxed)));
+
+    // Latch clip indicators (cleared by clicking on the meter)
+    if (holdInL  > -0.1f) clipInL  = true;
+    if (holdInR  > -0.1f) clipInR  = true;
+    if (holdOutL > -0.1f) clipOutL = true;
+    if (holdOutR > -0.1f) clipOutR = true;
 
     curveCacheDirty = true;
     repaint();
@@ -767,7 +779,7 @@ void EQDisplay::drawLevelMeters(juce::Graphics& g)
     const float maxDB =  6.f;
     const float range = maxDB - minDB;
 
-    auto drawStrip = [&](float x, float levelDB, float holdDB)
+    auto drawStrip = [&](float x, float levelDB, float holdDB, bool clipped)
     {
         // Dark background
         g.setColour(juce::Colour(0xff02030a));
@@ -795,19 +807,26 @@ void EQDisplay::drawLevelMeters(juce::Graphics& g)
             g.fillRect(x, holdY, mW, 1.5f);
         }
 
+        // Clip indicator — persistent red bar at top until click-reset
+        if (clipped)
+        {
+            g.setColour(juce::Colour(0xffff1122));
+            g.fillRect(x, 0.f, mW, 3.f);
+        }
+
         // Thin border
         g.setColour(juce::Colour(0xff0a0b18));
         g.drawRect(x, 0.f, mW, h, 0.5f);
     };
 
     // Left side: IN
-    drawStrip(0.f,        mtrInL,  holdInL);
-    drawStrip(mW + gap,   mtrInR,  holdInR);
+    drawStrip(0.f,        mtrInL,  holdInL,  clipInL);
+    drawStrip(mW + gap,   mtrInR,  holdInR,  clipInR);
 
     // Right side: OUT
     const float w = static_cast<float>(getWidth());
-    drawStrip(w - 2.f * (mW + gap), mtrOutL, holdOutL);
-    drawStrip(w - mW - gap,         mtrOutR, holdOutR);
+    drawStrip(w - 2.f * (mW + gap), mtrOutL, holdOutL, clipOutL);
+    drawStrip(w - mW - gap,         mtrOutR, holdOutR, clipOutR);
 
     // Labels
     g.setFont(juce::Font(juce::FontOptions().withName("Consolas").withHeight(7.5f)));
@@ -963,6 +982,16 @@ void EQDisplay::drawGainScaleBtn(juce::Graphics& g)
     g.setColour(showPhase ? juce::Colour(0xff9977dd) : juce::Colour(0xff3a3a6a));
     g.drawText("PHASE", phaseBtnBounds.toNearestInt(), juce::Justification::centred);
 
+    // RMS averaging mode toggle — right of phase
+    rmsAvgBtnBounds = juce::Rectangle<float>(100.f, gridH + 2.f, 32.f, 13.f);
+    g.setColour(spectrumAvg ? juce::Colour(0xff0a1410) : juce::Colour(0xff0c0d1c));
+    g.fillRect(rmsAvgBtnBounds);
+    g.setColour(spectrumAvg ? juce::Colour(0xff1a4430) : juce::Colour(0xff222240));
+    g.drawRect(rmsAvgBtnBounds, 0.6f);
+    g.setFont(juce::Font(juce::FontOptions().withName("Consolas").withHeight(8.f)));
+    g.setColour(spectrumAvg ? juce::Colour(0xff44dd88) : juce::Colour(0xff3a3a6a));
+    g.drawText("RMS", rmsAvgBtnBounds.toNearestInt(), juce::Justification::centred);
+
     // Piano roll toggle — bottom-right (avoid OUT meter, leave 12px margin)
     const float w = static_cast<float>(getWidth());
     pianoRollBtnBounds = juce::Rectangle<float>(w - 38.f, gridH + 2.f, 36.f, 13.f);
@@ -1079,11 +1108,31 @@ void EQDisplay::mouseDown(const juce::MouseEvent& e)
         repaint();
         return;
     }
+    if (rmsAvgBtnBounds.contains(pos))
+    {
+        spectrumAvg = !spectrumAvg;
+        repaint();
+        return;
+    }
     if (pianoRollBtnBounds.contains(pos))
     {
         showPianoRoll = !showPianoRoll;
         repaint();
         return;
+    }
+
+    // Click on the level meter strips (far left/right edges) resets clip indicators
+    {
+        const float mW = 7.f, gap = 2.f, h = static_cast<float>(getHeight()) - 18.f;
+        const float w  = static_cast<float>(getWidth());
+        juce::Rectangle<float> inArea  (0.f,                   0.f, mW * 2.f + gap, h);
+        juce::Rectangle<float> outArea (w - 2.f*(mW+gap), 0.f, mW * 2.f + gap, h);
+        if (inArea.contains(pos) || outArea.contains(pos))
+        {
+            clipInL = clipInR = clipOutL = clipOutR = false;
+            repaint();
+            return;
+        }
     }
 
     int hit = bandNodeAtPoint(pos);

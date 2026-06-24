@@ -61,6 +61,9 @@ juce::AudioProcessorValueTreeState::ParameterLayout MantisVexQProcessor::createP
     layout.add(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID("oversample",    1), "Oversampling",  kOSNames, 0));
     layout.add(std::make_unique<juce::AudioParameterBool>  (juce::ParameterID("lin_phase",     1), "Linear Phase",  false));
     layout.add(std::make_unique<juce::AudioParameterBool>  (juce::ParameterID("monitor_solo",  1), "Monitor Solo",  false));
+    layout.add(std::make_unique<juce::AudioParameterBool>  (juce::ParameterID("delta",          1), "Delta",         false));
+    layout.add(std::make_unique<juce::AudioParameterChoice>(juce::ParameterID("ms_monitor",     1), "MS Monitor",
+        juce::StringArray { "ST","M","S" }, 0));
 
     return layout;
 }
@@ -81,7 +84,7 @@ MantisVexQProcessor::MantisVexQProcessor()
             apvts.addParameterListener(p + s, this);
         soloStates[i].store(false);
     }
-    for (auto& id : { "output_gain","auto_gain","spectrum_post","oversample","lin_phase","monitor_solo" })
+    for (auto& id : { "output_gain","auto_gain","spectrum_post","oversample","lin_phase","monitor_solo","delta","ms_monitor" })
         apvts.addParameterListener(id, this);
 
     outputGainParam   = apvts.getRawParameterValue("output_gain");
@@ -90,6 +93,8 @@ MantisVexQProcessor::MantisVexQProcessor()
     oversampleParam   = apvts.getRawParameterValue("oversample");
     linPhaseParam     = apvts.getRawParameterValue("lin_phase");
     monitorSoloParam  = apvts.getRawParameterValue("monitor_solo");
+    deltaParam        = apvts.getRawParameterValue("delta");
+    msMonitorParam    = apvts.getRawParameterValue("ms_monitor");
 
     // Init A/B states as empty (will be populated on first prepareToPlay or use)
     abState[0] = juce::ValueTree();
@@ -106,7 +111,7 @@ MantisVexQProcessor::~MantisVexQProcessor()
                          "dyn","dyn_thr","dyn_atk","dyn_rel","dyn_rat" })
             apvts.removeParameterListener(p + s, this);
     }
-    for (auto& id : { "output_gain","auto_gain","spectrum_post","oversample","lin_phase","monitor_solo" })
+    for (auto& id : { "output_gain","auto_gain","spectrum_post","oversample","lin_phase","monitor_solo","delta","ms_monitor" })
         apvts.removeParameterListener(id, this);
 }
 
@@ -136,6 +141,8 @@ void MantisVexQProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 {
     currentSampleRate = sampleRate;
     maxBlockSize      = samplesPerBlock;
+
+    dryBuf.setSize(2, samplesPerBlock, false, true, true);
 
     for (auto& b : bands)    b.reset();
     for (auto& d : dynBands) d.reset();
@@ -271,6 +278,14 @@ void MantisVexQProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::M
                                             std::memory_order_relaxed);
     }
 
+    // Capture dry for delta-monitoring mode (no heap alloc — buffer pre-sized in prepareToPlay)
+    const bool deltaMode = *deltaParam > 0.5f;
+    if (deltaMode)
+    {
+        for (int ch = 0; ch < juce::jmin(numChannels, dryBuf.getNumChannels()); ++ch)
+            dryBuf.copyFrom(ch, 0, buffer, ch, 0, numSamples);
+    }
+
     // Capture sidechain bus if connected
     const float* scL = nullptr;
     const float* scR = nullptr;
@@ -341,6 +356,31 @@ void MantisVexQProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::M
                 if (L) L[s] = static_cast<float>(monitorL.process(L[s], monitorCoeffs));
                 if (R && R != L) R[s] = static_cast<float>(monitorR.process(R[s], monitorCoeffs));
             }
+        }
+    }
+
+    // Delta mode — subtract dry signal so output = wet - dry (EQ diff only)
+    if (deltaMode)
+    {
+        for (int ch = 0; ch < juce::jmin(numChannels, dryBuf.getNumChannels()); ++ch)
+        {
+            auto* wet = buffer.getWritePointer(ch);
+            const auto* dry = dryBuf.getReadPointer(ch);
+            for (int s = 0; s < numSamples; ++s)
+                wet[s] -= dry[s];
+        }
+    }
+
+    // M/S output monitor — fold stereo to mid-only or side-only
+    {
+        const int msMode = (int)msMonitorParam->load();
+        if (msMode == 1 && L && R && R != L)       // Mid only
+        {
+            for (int s = 0; s < numSamples; ++s) { float m=(L[s]+R[s])*0.5f; L[s]=R[s]=m; }
+        }
+        else if (msMode == 2 && L && R && R != L)  // Side only
+        {
+            for (int s = 0; s < numSamples; ++s) { float sd=(L[s]-R[s])*0.5f; L[s]=R[s]=sd; }
         }
     }
 

@@ -121,6 +121,10 @@ private:
     std::atomic<float>* oversampleParam   = nullptr;
     std::atomic<float>* linPhaseParam     = nullptr;
     std::atomic<float>* monitorSoloParam  = nullptr;
+    std::atomic<float>* deltaParam        = nullptr;
+    std::atomic<float>* msMonitorParam    = nullptr;
+
+    juce::AudioBuffer<float> dryBuf;
 
     // Solo monitoring bandpass filter — applied to output when monitor mode + solo active
     BiquadCoeffs monitorCoeffs {};

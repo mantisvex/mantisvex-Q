@@ -130,16 +130,20 @@ private:
     bool showPianoRoll   = false;
     bool showPhase       = false;
     bool spectrumFrozen  = false;
+    bool spectrumAvg     = false;
     juce::Rectangle<float> pianoRollBtnBounds;
     juce::Rectangle<float> gainScaleBtnBounds;
     juce::Rectangle<float> phaseBtnBounds;
     juce::Rectangle<float> freezeBtnBounds;
+    juce::Rectangle<float> rmsAvgBtnBounds;
 
     // Level meter GUI-side state (decay handled in timer)
     float mtrInL  = -90.f, mtrInR  = -90.f;
     float mtrOutL = -90.f, mtrOutR = -90.f;
     float holdInL = -90.f, holdInR = -90.f;
     float holdOutL= -90.f, holdOutR= -90.f;
+    bool  clipInL  = false, clipInR  = false;
+    bool  clipOutL = false, clipOutR = false;
 
     static constexpr float kNodeRadius  =  6.5f;
     static constexpr int   kCurvePoints = 512;

@@ -79,12 +79,13 @@ private:
     // Global controls
     juce::TextButton btnSpecPost, btnAutoGain;
     juce::TextButton btnLinPhase, btnMonitor;
-    juce::ComboBox   comboOversample;
+    juce::TextButton btnDelta;
+    juce::ComboBox   comboOversample, comboMsMonitor;
     juce::Label      outputGainLabel;
     juce::Slider     outputGainSlider;
     juce::AudioProcessorValueTreeState::SliderAttachment outputGainAttach;
-    juce::AudioProcessorValueTreeState::ButtonAttachment specPostAttach, autoGainAttach, linPhaseAttach, monitorAttach;
-    juce::AudioProcessorValueTreeState::ComboBoxAttachment oversampleAttach;
+    juce::AudioProcessorValueTreeState::ButtonAttachment specPostAttach, autoGainAttach, linPhaseAttach, monitorAttach, deltaAttach;
+    juce::AudioProcessorValueTreeState::ComboBoxAttachment oversampleAttach, msMonitorAttach;
 
     // A/B comparison
     juce::TextButton btnA, btnB;
