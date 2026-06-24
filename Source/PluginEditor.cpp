@@ -110,6 +110,9 @@ BandControlStrip::BandControlStrip(MantisVexQProcessor& p) : processor(p)
 
     setActiveBand(-1);
     startTimerHz(10);
+
+    // Capture right-clicks on child sliders for MIDI learn
+    addMouseListener(this, true);
 }
 
 BandControlStrip::~BandControlStrip()
@@ -135,17 +138,65 @@ void BandControlStrip::timerCallback()
         comboSlope.setEnabled(slopeRelevant);
         labelSlope.setEnabled(slopeRelevant);
     }
+
+    // Repaint when MIDI learn status changes (so the CC# indicators stay current)
+    static bool wasLearning = false;
+    bool nowLearning = processor.isMidiLearning();
+    if (nowLearning != wasLearning) { wasLearning = nowLearning; repaint(); }
 }
 
 void BandControlStrip::mouseDown(const juce::MouseEvent& e)
 {
-    if (e.y >= kTabH) return;   // below tab row — ignore, JUCE forwards to children
+    // Right-click on any slider → MIDI learn menu
+    if (e.mods.isRightButtonDown())
+    {
+        if (auto* sl = dynamic_cast<juce::Slider*>(e.eventComponent))
+        {
+            juce::String pid = getParamIDForSlider(sl);
+            if (pid.isNotEmpty()) { showMidiLearnMenu(pid); return; }
+        }
+    }
+
+    // Remaining handling only applies to clicks on the BandControlStrip itself (tab row)
+    if (e.eventComponent != this) return;
+    if (e.y >= kTabH) return;
 
     const int tabIndex = juce::jlimit(0, 23,
         (int)(e.x / ((float)getWidth() / 24.f)));
 
     if (onBandSelected)
         onBandSelected(tabIndex);
+}
+
+juce::String BandControlStrip::getParamIDForSlider(juce::Slider* sl) const
+{
+    if (activeBand < 0 || sl == nullptr) return {};
+    juce::String px = "band" + juce::String(activeBand + 1) + "_";
+    if (sl == &sliderFreq)   return px + "freq";
+    if (sl == &sliderGain)   return px + "gain";
+    if (sl == &sliderQ)      return px + "q";
+    if (sl == &sliderDynThr) return px + "dyn_thr";
+    if (sl == &sliderDynAtk) return px + "dyn_atk";
+    if (sl == &sliderDynRel) return px + "dyn_rel";
+    if (sl == &sliderDynRat) return px + "dyn_rat";
+    return {};
+}
+
+void BandControlStrip::showMidiLearnMenu(const juce::String& paramID)
+{
+    int currentCC = processor.getMidiCC(paramID);
+    juce::PopupMenu menu;
+    menu.addItem(1, "Assign MIDI CC" + (currentCC >= 0 ? " (currently CC#" + juce::String(currentCC) + ")" : ""));
+    menu.addItem(2, "Clear MIDI CC", currentCC >= 0);
+
+    juce::Component::SafePointer<BandControlStrip> safe(this);
+    juce::String pid = paramID;
+    menu.showMenuAsync(juce::PopupMenu::Options(), [safe, pid](int result) {
+        if (safe == nullptr) return;
+        if (result == 1) safe->processor.startMidiLearn(pid);
+        if (result == 2) safe->processor.clearMidiCC(pid);
+        safe->repaint();
+    });
 }
 
 void BandControlStrip::disconnectFromParams()
@@ -474,6 +525,55 @@ void BandControlStrip::paint(juce::Graphics& g)
             g.drawText(vals[k], dynValX[k], dynValY, valW, 13, juce::Justification::centred);
         }
     }
+
+    // MIDI CC indicators — small CC# tag below each knob value readout
+    if (activeBand >= 0 && valW > 0)
+    {
+        const juce::String paramSfx[] = { "freq", "gain", "q" };
+        juce::String bpx = "band" + juce::String(activeBand + 1) + "_";
+        g.setFont(juce::Font(juce::FontOptions().withHeight(7.f)));
+
+        for (int k = 0; k < 3; ++k)
+        {
+            juce::String pid = bpx + paramSfx[k];
+            bool learning = processor.isMidiLearning() && processor.getMidiLearnParamID() == pid;
+            int  cc       = processor.getMidiCC(pid);
+
+            if (learning)
+            {
+                g.setColour(juce::Colour(0xffffaa22).withAlpha(0.85f));
+                g.drawText("LEARN", valX[k], valY + 14, valW, 8, juce::Justification::centred);
+            }
+            else if (cc >= 0)
+            {
+                g.setColour(juce::Colour(0xff33bb66).withAlpha(0.80f));
+                g.drawText("CC" + juce::String(cc), valX[k], valY + 14, valW, 8, juce::Justification::centred);
+            }
+        }
+
+        // DYN param CC indicators
+        if (dynValY > 0)
+        {
+            const juce::String dynSfx[] = { "dyn_thr", "dyn_atk", "dyn_rel", "dyn_rat" };
+            for (int k = 0; k < 4; ++k)
+            {
+                juce::String pid = bpx + dynSfx[k];
+                bool learning = processor.isMidiLearning() && processor.getMidiLearnParamID() == pid;
+                int  cc       = processor.getMidiCC(pid);
+
+                if (learning)
+                {
+                    g.setColour(juce::Colour(0xffffaa22).withAlpha(0.85f));
+                    g.drawText("LEARN", dynValX[k], dynValY + 13, valW, 8, juce::Justification::centred);
+                }
+                else if (cc >= 0)
+                {
+                    g.setColour(juce::Colour(0xff33bb66).withAlpha(0.80f));
+                    g.drawText("CC" + juce::String(cc), dynValX[k], dynValY + 13, valW, 8, juce::Justification::centred);
+                }
+            }
+        }
+    }
 }
 
 //==============================================================================
@@ -589,7 +689,7 @@ MantisVexQEditor::MantisVexQEditor(MantisVexQProcessor& p)
     infoLabel.setColour(juce::Label::textColourId, juce::Colour(0xff383858));
     infoLabel.setJustificationType(juce::Justification::centred);
     infoLabel.setText(
-        "click: add  //  drag: freq/gain  //  scroll: Q  //  dbl-click: delete  //  right-click: copy/paste  //  E: on  B: byp  D: dyn  S: solo",
+        "click: add  //  drag: freq/gain  //  scroll: Q  //  dbl-click: delete  //  right-click: menu  //  Ctrl+C/V: copy/paste  //  E: on  B: byp  D: dyn  S: solo  //  right-click knob: MIDI learn",
         juce::dontSendNotification);
     addAndMakeVisible(infoLabel);
 
@@ -628,6 +728,16 @@ bool MantisVexQEditor::keyPressed(const juce::KeyPress& key, juce::Component*)
     { audioProcessor.getUndoManager().undo(); return true; }
     if (key == juce::KeyPress('y', juce::ModifierKeys::ctrlModifier, 0))
     { audioProcessor.getUndoManager().redo(); return true; }
+    if (key == juce::KeyPress('c', juce::ModifierKeys::ctrlModifier, 0))
+    {
+        int sel = eqDisplay.getSelectedBand();
+        if (sel >= 0) { eqDisplay.copyBand(sel); return true; }
+    }
+    if (key == juce::KeyPress('v', juce::ModifierKeys::ctrlModifier, 0))
+    {
+        int sel = eqDisplay.getSelectedBand();
+        if (sel >= 0 && eqDisplay.hasClipboard()) { eqDisplay.pasteBand(sel); return true; }
+    }
     if (key == juce::KeyPress::escapeKey)
     { eqDisplay.setSelectedBand(-1); bandStrip.setActiveBand(-1); return true; }
 

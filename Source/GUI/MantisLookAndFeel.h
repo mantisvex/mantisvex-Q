@@ -122,8 +122,10 @@ public:
             g.fillEllipse(px - 3.8f, py - 3.8f, 7.6f, 7.6f);
         }
 
-        // Value text inside the inner disc while dragging
-        if (slider.isMouseButtonDown())
+        // Value text inside the inner disc: full display while dragging, dim on hover
+        const bool isDown = slider.isMouseButtonDown();
+        const bool isHov  = slider.isMouseOver() && !isDown;
+        if (isDown || isHov)
         {
             auto   suffix = slider.getTextValueSuffix();
             double val    = slider.getValue();
@@ -140,13 +142,19 @@ public:
             else if (suffix == ":1")  { valStr = juce::String(val, 1); }
             else                      { valStr = juce::String(val, 2); }
 
-            // Semi-transparent fill behind value to mask the inner glow
-            g.setColour(juce::Colour(0xcc06070e));
-            g.fillEllipse(cx - innerR + 1.f, cy - innerR + 1.f,
-                          (innerR - 1.f) * 2.f, (innerR - 1.f) * 2.f);
-
+            if (isDown)
+            {
+                // Semi-transparent fill behind value to mask the inner glow
+                g.setColour(juce::Colour(0xcc06070e));
+                g.fillEllipse(cx - innerR + 1.f, cy - innerR + 1.f,
+                              (innerR - 1.f) * 2.f, (innerR - 1.f) * 2.f);
+                g.setColour(accent.brighter(0.2f));
+            }
+            else  // hover — no backdrop, just dim text so the pointer stays visible
+            {
+                g.setColour(accent.withAlpha(0.52f));
+            }
             g.setFont(juce::Font(juce::FontOptions().withName("Consolas").withHeight(7.5f)));
-            g.setColour(accent.brighter(0.2f));
             g.drawText(valStr,
                        static_cast<int>(cx - innerR), static_cast<int>(cy - innerR),
                        static_cast<int>(innerR * 2.f), static_cast<int>(innerR * 2.f),

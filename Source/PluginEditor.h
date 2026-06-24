@@ -28,6 +28,9 @@ private:
     void connectToParams();
     void disconnectFromParams();
 
+    juce::String getParamIDForSlider(juce::Slider* sl) const;
+    void showMidiLearnMenu(const juce::String& paramID);
+
     MantisVexQProcessor& processor;
     int activeBand = -1;
 

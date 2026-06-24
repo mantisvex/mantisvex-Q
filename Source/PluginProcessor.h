@@ -23,7 +23,7 @@ public:
     bool hasEditor() const override { return true; }
 
     const juce::String getName() const override { return "Mantis Vex Q"; }
-    bool acceptsMidi()  const override { return false; }
+    bool acceptsMidi()  const override { return true; }
     bool producesMidi() const override { return false; }
     double getTailLengthSeconds() const override { return 0.0; }
 
@@ -63,6 +63,15 @@ public:
     bool isAnySoloed() const noexcept;
 
     float computeAutoGain() const;
+
+    // MIDI CC learn
+    void startMidiLearn (const juce::String& paramID);
+    void stopMidiLearn  ();
+    void clearMidiCC    (const juce::String& paramID);
+    void assignMidiCC   (int cc, const juce::String& paramID);  // direct (no learn state)
+    int  getMidiCC      (const juce::String& paramID) const noexcept;
+    bool isMidiLearning () const noexcept { return midiLearnIdx.load() >= 0; }
+    juce::String getMidiLearnParamID() const noexcept;
 
     // A/B comparison
     void copyToAB (int slot);     // slot 0=A, 1=B
@@ -125,6 +134,13 @@ private:
     std::atomic<float>* msMonitorParam    = nullptr;
 
     juce::AudioBuffer<float> dryBuf;
+
+    // MIDI CC learn — built once in constructor, never mutated after
+    static constexpr int kNumMidiCC = 128;
+    std::vector<juce::AudioProcessorParameter*> paramPtrs;   // parallel to paramIDs
+    std::vector<juce::String>                   paramIDs;    // parallel to paramPtrs
+    std::array<std::atomic<int>, kNumMidiCC>    midiCCMap  {};  // CC# → paramPtrs index, -1=none
+    std::atomic<int>                            midiLearnIdx { -1 }; // idx being learned, -1=off
 
     // Solo monitoring bandpass filter — applied to output when monitor mode + solo active
     BiquadCoeffs monitorCoeffs {};

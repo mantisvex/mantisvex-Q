@@ -34,6 +34,9 @@ EQDisplay::EQDisplay(MantisVexQProcessor& p) : processor(p)
 
 EQDisplay::~EQDisplay() { stopTimer(); }
 
+void EQDisplay::copyBand(int bi)  { handleContextMenuResult(400, bi); }
+void EQDisplay::pasteBand(int bi) { if (clipboard.valid) handleContextMenuResult(401, bi); }
+
 void EQDisplay::timerCallback()
 {
     std::array<float, SpectrumAnalyzer::kFFTSize> newData;
@@ -356,6 +359,24 @@ void EQDisplay::drawSpectrum(juce::Graphics& g)
 
     if (showPost && spectrumPostInitialized)
         drawLayer(spectrumDataPost, spectrumPeakPost, 0.16f, 0.32f, 0.42f);
+
+    // Pink-noise / -3dB-per-octave tilt reference line, anchored at 0dB @ 1kHz
+    if (showTiltRef)
+    {
+        const float w = static_cast<float>(getWidth());
+        juce::Path ref;
+        bool first = true;
+        for (int px = 0; px < (int)w; ++px)
+        {
+            float f   = xToFreq((float)px);
+            float rdb = -3.f * std::log2(f / 1000.f);
+            float y   = juce::jlimit(0.f, displayH, dbToY(rdb));
+            if (first) { ref.startNewSubPath((float)px, y); first = false; }
+            else          ref.lineTo((float)px, y);
+        }
+        g.setColour(juce::Colour(0x55ffaa44));
+        g.strokePath(ref, juce::PathStrokeType(1.1f, juce::PathStrokeType::curved));
+    }
 }
 
 void EQDisplay::drawBandFills(juce::Graphics& g)
@@ -982,6 +1003,16 @@ void EQDisplay::drawGainScaleBtn(juce::Graphics& g)
     g.setColour(showPhase ? juce::Colour(0xff9977dd) : juce::Colour(0xff3a3a6a));
     g.drawText("PHASE", phaseBtnBounds.toNearestInt(), juce::Justification::centred);
 
+    // Tilt reference (-3dB/oct) toggle — right of RMS
+    tiltRefBtnBounds = juce::Rectangle<float>(136.f, gridH + 2.f, 30.f, 13.f);
+    g.setColour(showTiltRef ? juce::Colour(0xff100a04) : juce::Colour(0xff0c0d1c));
+    g.fillRect(tiltRefBtnBounds);
+    g.setColour(showTiltRef ? juce::Colour(0xff552a08) : juce::Colour(0xff222240));
+    g.drawRect(tiltRefBtnBounds, 0.6f);
+    g.setFont(juce::Font(juce::FontOptions().withName("Consolas").withHeight(8.f)));
+    g.setColour(showTiltRef ? juce::Colour(0xffff9933) : juce::Colour(0xff3a3a6a));
+    g.drawText("TILT", tiltRefBtnBounds.toNearestInt(), juce::Justification::centred);
+
     // RMS averaging mode toggle — right of phase
     rmsAvgBtnBounds = juce::Rectangle<float>(100.f, gridH + 2.f, 32.f, 13.f);
     g.setColour(spectrumAvg ? juce::Colour(0xff0a1410) : juce::Colour(0xff0c0d1c));
@@ -1111,6 +1142,12 @@ void EQDisplay::mouseDown(const juce::MouseEvent& e)
     if (rmsAvgBtnBounds.contains(pos))
     {
         spectrumAvg = !spectrumAvg;
+        repaint();
+        return;
+    }
+    if (tiltRefBtnBounds.contains(pos))
+    {
+        showTiltRef = !showTiltRef;
         repaint();
         return;
     }

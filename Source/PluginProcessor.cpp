@@ -99,6 +99,25 @@ MantisVexQProcessor::MantisVexQProcessor()
     // Init A/B states as empty (will be populated on first prepareToPlay or use)
     abState[0] = juce::ValueTree();
     abState[1] = juce::ValueTree();
+
+    // Build stable param list (ID + pointer) for MIDI CC routing
+    // Enumerate all known IDs in order so we can reverse-lookup by string
+    for (int b = 1; b <= kNumBands; ++b)
+    {
+        juce::String px = "band" + juce::String(b) + "_";
+        for (const char* sfx : { "freq","gain","q","type","slope","channel",
+                                  "dyn","dyn_thr","dyn_atk","dyn_rel","dyn_rat","dyn_sc",
+                                  "enabled","bypassed" })
+        {
+            juce::String id = px + sfx;
+            if (auto* p = apvts.getParameter(id)) { paramIDs.push_back(id); paramPtrs.push_back(p); }
+        }
+    }
+    for (const char* id : { "output_gain","auto_gain","spectrum_post","oversample",
+                             "lin_phase","monitor_solo","delta","ms_monitor" })
+        if (auto* p = apvts.getParameter(id)) { paramIDs.push_back(id); paramPtrs.push_back(p); }
+
+    for (auto& a : midiCCMap) a.store(-1);
 }
 
 MantisVexQProcessor::~MantisVexQProcessor()
@@ -242,9 +261,32 @@ void MantisVexQProcessor::processBlockMinPhase(float* L, float* R, const float* 
     }
 }
 
-void MantisVexQProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
+void MantisVexQProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
 {
     juce::ScopedNoDenormals noDenormals;
+
+    // MIDI CC routing — handle learn + live control
+    for (const auto meta : midiMessages)
+    {
+        const auto msg = meta.getMessage();
+        if (msg.isController())
+        {
+            const int cc  = msg.getControllerNumber();
+            const int idx = midiLearnIdx.load();
+            if (idx >= 0)
+            {
+                midiCCMap[cc].store(idx);
+                midiLearnIdx.store(-1);
+            }
+            else
+            {
+                const int pidx = midiCCMap[cc].load();
+                if (pidx >= 0 && pidx < (int)paramPtrs.size())
+                    paramPtrs[pidx]->setValueNotifyingHost(msg.getControllerValue() / 127.f);
+            }
+        }
+    }
+    midiMessages.clear();
 
     if (parametersChanged.exchange(false))
     {
@@ -601,6 +643,21 @@ void MantisVexQProcessor::getStateInformation(juce::MemoryBlock& destData)
     if (abState[1].isValid()) ab.addChild(abState[1].createCopy(), -1, nullptr);
     state.addChild(ab, -1, nullptr);
 
+    // Embed MIDI CC map
+    juce::ValueTree ccTree("MidiCC");
+    for (int cc = 0; cc < kNumMidiCC; ++cc)
+    {
+        int idx = midiCCMap[cc].load();
+        if (idx >= 0 && idx < (int)paramIDs.size())
+        {
+            juce::ValueTree e("e");
+            e.setProperty("cc",  cc,             nullptr);
+            e.setProperty("pid", paramIDs[idx],  nullptr);
+            ccTree.addChild(e, -1, nullptr);
+        }
+    }
+    state.addChild(ccTree, -1, nullptr);
+
     std::unique_ptr<juce::XmlElement> xml(state.createXml());
     copyXmlToBinary(*xml, destData);
 }
@@ -621,11 +678,77 @@ void MantisVexQProcessor::setStateInformation(const void* data, int sizeInBytes)
             if (ab.getNumChildren() > 1) abState[1] = ab.getChild(1).createCopy();
         }
 
+        // Restore MIDI CC map
+        auto ccTree = state.getChildWithName("MidiCC");
+        if (ccTree.isValid())
+        {
+            state.removeChild(ccTree, nullptr);
+            for (auto& a : midiCCMap) a.store(-1);
+            for (auto e : ccTree)
+            {
+                int cc = (int)e.getProperty("cc", -1);
+                juce::String pid = e.getProperty("pid", "");
+                if (cc >= 0 && cc < kNumMidiCC)
+                    assignMidiCC(cc, pid);
+            }
+        }
+
         apvts.replaceState(state);
         parametersChanged.store(true);
     }
 }
 
+//==============================================================================
+// MIDI CC learn
+void MantisVexQProcessor::startMidiLearn(const juce::String& paramID)
+{
+    for (int i = 0; i < (int)paramIDs.size(); ++i)
+        if (paramIDs[i] == paramID) { midiLearnIdx.store(i); return; }
+}
+
+void MantisVexQProcessor::stopMidiLearn()
+{
+    midiLearnIdx.store(-1);
+}
+
+void MantisVexQProcessor::clearMidiCC(const juce::String& paramID)
+{
+    for (int i = 0; i < (int)paramIDs.size(); ++i)
+        if (paramIDs[i] == paramID)
+        {
+            for (int cc = 0; cc < kNumMidiCC; ++cc)
+                if (midiCCMap[cc].load() == i) midiCCMap[cc].store(-1);
+            return;
+        }
+}
+
+void MantisVexQProcessor::assignMidiCC(int cc, const juce::String& paramID)
+{
+    for (int i = 0; i < (int)paramIDs.size(); ++i)
+        if (paramIDs[i] == paramID) { midiCCMap[cc].store(i); return; }
+}
+
+int MantisVexQProcessor::getMidiCC(const juce::String& paramID) const noexcept
+{
+    for (int i = 0; i < (int)paramIDs.size(); ++i)
+        if (paramIDs[i] == paramID)
+        {
+            for (int cc = 0; cc < kNumMidiCC; ++cc)
+                if (midiCCMap[cc].load() == i) return cc;
+            return -1;
+        }
+    return -1;
+}
+
+juce::String MantisVexQProcessor::getMidiLearnParamID() const noexcept
+{
+    int idx = midiLearnIdx.load();
+    if (idx >= 0 && idx < (int)paramIDs.size())
+        return paramIDs[idx];
+    return {};
+}
+
+//==============================================================================
 juce::AudioProcessorEditor* MantisVexQProcessor::createEditor()
 {
     return new MantisVexQEditor(*this);

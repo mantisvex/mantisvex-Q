@@ -27,6 +27,10 @@ public:
     int  getSelectedBand() const noexcept { return selectedBand; }
     void setSelectedBand(int band);
 
+    void copyBand (int bandIndex);
+    void pasteBand(int bandIndex);
+    bool hasClipboard() const noexcept { return clipboard.valid; }
+
     std::function<void(int)> onBandSelected;
 
 private:
@@ -131,11 +135,13 @@ private:
     bool showPhase       = false;
     bool spectrumFrozen  = false;
     bool spectrumAvg     = false;
+    bool showTiltRef     = false;
     juce::Rectangle<float> pianoRollBtnBounds;
     juce::Rectangle<float> gainScaleBtnBounds;
     juce::Rectangle<float> phaseBtnBounds;
     juce::Rectangle<float> freezeBtnBounds;
     juce::Rectangle<float> rmsAvgBtnBounds;
+    juce::Rectangle<float> tiltRefBtnBounds;
 
     // Level meter GUI-side state (decay handled in timer)
     float mtrInL  = -90.f, mtrInR  = -90.f;
