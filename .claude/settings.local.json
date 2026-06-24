@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Copy-Item *)",
+      "PowerShell(Get-Process *)",
+      "WebFetch(domain:www.mantisvex.com)",
+      "WebFetch(domain:mantisvex.com)",
+      "PowerShell(Set-Content *)",
+      "WebFetch(domain:github.com)",
+      "PowerShell(cmake *)",
+      "Bash(gh repo *)",
+      "Bash(gh search *)",
+      "PowerShell(gh repo *)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "PowerShell(winget install *)",
+      "PowerShell(gh *)",
+      "PowerShell(Get-ChildItem *)",
+      "PowerShell(Get-ChildItem \"C:\\\\Program Files\\\\\" | Where-Object { $_.Name -match \"git\" -or $_.Name -match \"github\" } | Select-Object Name)"
+    ]
+  }
+}
