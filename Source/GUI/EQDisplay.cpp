@@ -5,12 +5,12 @@
 namespace Colors {
     static const juce::Colour BG         { 0xff06070e };
     static const juce::Colour BG2        { 0xff0a0b16 };
-    static const juce::Colour Grid       { 0x0caaaacc };
-    static const juce::Colour GridMajor  { 0x15aaaacc };
-    static const juce::Colour GridZero   { 0x2a5599ee };
-    static const juce::Colour GridText   { 0xff3a3a62 };
-    static const juce::Colour SpecBase   { 0xff00ddaa };
-    static const juce::Colour SpecPeak   { 0xff55ffcc };
+    static const juce::Colour Grid       { 0x0aaaaacc };
+    static const juce::Colour GridMajor  { 0x0daaaacc };
+    static const juce::Colour GridZero   { 0x1c5599ee };
+    static const juce::Colour GridText   { 0xff2a2a4e };
+    static const juce::Colour SpecBase   { 0xff00b896 };
+    static const juce::Colour SpecPeak   { 0xff40e8b8 };
     static const juce::Colour Ghost      { 0x5588bbff };
 }
 
@@ -216,7 +216,7 @@ void EQDisplay::drawBackground(juce::Graphics& g)
 
     {
         const float cx = w * 0.5f, cy = h * 0.42f;
-        juce::ColourGradient radial(Colors::SpecBase.withAlpha(0.030f), cx, cy,
+        juce::ColourGradient radial(Colors::SpecBase.withAlpha(0.018f), cx, cy,
                                      Colors::SpecBase.withAlpha(0.0f),  cx + w * 0.55f, cy, true);
         g.setGradientFill(radial);
         g.fillRect(bounds);
@@ -356,12 +356,12 @@ void EQDisplay::drawSpectrum(juce::Graphics& g)
 
     if (spectrumInitialized)
         drawLayer(spectrumData, spectrumPeak,
-                  showPost ? 0.05f : 0.16f,
-                  showPost ? 0.14f : 0.32f,
-                  showPost ? 0.00f : 0.42f);
+                  showPost ? 0.04f : 0.09f,
+                  showPost ? 0.11f : 0.18f,
+                  showPost ? 0.00f : 0.26f);
 
     if (showPost && spectrumPostInitialized)
-        drawLayer(spectrumDataPost, spectrumPeakPost, 0.16f, 0.32f, 0.42f);
+        drawLayer(spectrumDataPost, spectrumPeakPost, 0.09f, 0.18f, 0.26f);
 
     // Reference spectrum overlay — golden line, drawn when a REF has been captured
     if (refSpectrumValid)
@@ -422,8 +422,8 @@ void EQDisplay::drawBandFills(juce::Graphics& g)
         bool isSoloed   = processor.isBandSoloed(b);
         bool dimmed     = anySolo && !isSoloed;
 
-        float fillAlpha = isSelected ? 0.85f : (isHovered ? 0.68f : 0.52f);
-        float lineAlpha = isSelected ? 0.98f : (isHovered ? 0.80f : 0.50f);
+        float fillAlpha = isSelected ? 0.52f : (isHovered ? 0.32f : 0.18f);
+        float lineAlpha = isSelected ? 0.88f : (isHovered ? 0.68f : 0.42f);
         if (isBypassed) { fillAlpha *= 0.25f; lineAlpha *= 0.25f; }
         if (dimmed)     { fillAlpha *= 0.18f; lineAlpha *= 0.18f; }
 
@@ -545,14 +545,14 @@ void EQDisplay::drawEQCurve(juce::Graphics& g)
 
     if (curve.isEmpty()) return;
 
-    g.setColour(juce::Colour(0x12ffffff));
-    g.strokePath(curve, juce::PathStrokeType(12.f, juce::PathStrokeType::curved));
-    g.setColour(juce::Colour(0x22ffffff));
-    g.strokePath(curve, juce::PathStrokeType(5.f, juce::PathStrokeType::curved));
-    g.setColour(juce::Colour(0x38ffffff));
-    g.strokePath(curve, juce::PathStrokeType(2.8f, juce::PathStrokeType::curved));
-    g.setColour(juce::Colour(0xeeffffff));
-    g.strokePath(curve, juce::PathStrokeType(1.6f, juce::PathStrokeType::curved,
+    g.setColour(juce::Colour(0x09d8f8f0));
+    g.strokePath(curve, juce::PathStrokeType(14.f, juce::PathStrokeType::curved));
+    g.setColour(juce::Colour(0x16d0f2ea));
+    g.strokePath(curve, juce::PathStrokeType(5.5f, juce::PathStrokeType::curved));
+    g.setColour(juce::Colour(0x2ce8faf6));
+    g.strokePath(curve, juce::PathStrokeType(2.4f, juce::PathStrokeType::curved));
+    g.setColour(juce::Colour(0xeef0fffc));
+    g.strokePath(curve, juce::PathStrokeType(1.5f, juce::PathStrokeType::curved,
                                               juce::PathStrokeType::rounded));
 }
 

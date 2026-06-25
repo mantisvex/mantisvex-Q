@@ -160,7 +160,7 @@ private:
     bool  clipInL  = false, clipInR  = false;
     bool  clipOutL = false, clipOutR = false;
 
-    static constexpr float kNodeRadius  =  6.5f;
+    static constexpr float kNodeRadius  =  5.5f;
     static constexpr int   kCurvePoints = 512;
     static constexpr int   kMaxBands    = 24;
 
