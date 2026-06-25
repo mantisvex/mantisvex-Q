@@ -140,7 +140,6 @@ void BandControlStrip::timerCallback()
     }
 
     // Repaint when MIDI learn status changes (so the CC# indicators stay current)
-    static bool wasLearning = false;
     bool nowLearning = processor.isMidiLearning();
     if (nowLearning != wasLearning) { wasLearning = nowLearning; repaint(); }
 }

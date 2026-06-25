@@ -32,7 +32,8 @@ private:
     void showMidiLearnMenu(const juce::String& paramID);
 
     MantisVexQProcessor& processor;
-    int activeBand = -1;
+    int  activeBand     = -1;
+    bool wasLearning    = false;
 
     // Cached layout for paint()-side value rendering
     int valX[3]    = {};

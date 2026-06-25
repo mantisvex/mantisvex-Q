@@ -127,7 +127,7 @@ MantisVexQProcessor::~MantisVexQProcessor()
     {
         juce::String p = "band" + juce::String(i + 1) + "_";
         for (auto& s : { "enabled","bypassed","freq","gain","q","type","slope","channel",
-                         "dyn","dyn_thr","dyn_atk","dyn_rel","dyn_rat" })
+                         "dyn","dyn_thr","dyn_atk","dyn_rel","dyn_rat","dyn_sc" })
             apvts.removeParameterListener(p + s, this);
     }
     for (auto& id : { "output_gain","auto_gain","spectrum_post","oversample","lin_phase","monitor_solo","delta","ms_monitor" })
@@ -188,6 +188,12 @@ void MantisVexQProcessor::processBlockMinPhase(float* L, float* R, const float* 
 {
     const bool anyBandSoloed = isAnySoloed();
 
+    // Cache solo state once per block — avoid per-sample atomic reads
+    bool soloCache[kNumBands] {};
+    if (anyBandSoloed)
+        for (int b = 0; b < kNumBands; ++b)
+            soloCache[b] = soloStates[b].load(std::memory_order_relaxed);
+
     for (int s = 0; s < numSamples; ++s)
     {
         float sL = L[s], sR = R[s];
@@ -200,7 +206,7 @@ void MantisVexQProcessor::processBlockMinPhase(float* L, float* R, const float* 
         {
             const auto& p = bands[b].getParams();
             if (!p.enabled || p.bypassed) continue;
-            if (anyBandSoloed && !soloStates[b].load(std::memory_order_relaxed)) continue;
+            if (anyBandSoloed && !soloCache[b]) continue;
 
             // Check dynamic EQ — use sidechain signal for detection if configured
             float blend = 1.f;
@@ -549,6 +555,8 @@ void MantisVexQProcessor::updateBand(int i)
     scOnCache [i] = dynOn && (*apvts.getRawParameterValue(p + "dyn_sc") > 0.5f);
     if (dynOn)
         dynBands[i].prepare(bp.freq, bp.q, thrDB, atk, rel, rat, currentSampleRate);
+    else
+        dynBlendState[i].store(1.f, std::memory_order_relaxed);  // no GR when dyn is off
 }
 
 void MantisVexQProcessor::updateAllBands()
