@@ -118,6 +118,27 @@ MantisVexQProcessor::MantisVexQProcessor()
         if (auto* p = apvts.getParameter(id)) { paramIDs.push_back(id); paramPtrs.push_back(p); }
 
     for (auto& a : midiCCMap) a.store(-1);
+
+    // Cache raw parameter pointers per band — eliminates string allocs in updateBand hot path
+    for (int i = 0; i < kNumBands; ++i)
+    {
+        juce::String p = "band" + juce::String(i + 1) + "_";
+        auto& c = bandParamCache[i];
+        c.enabled  = apvts.getRawParameterValue(p + "enabled");
+        c.bypassed = apvts.getRawParameterValue(p + "bypassed");
+        c.freq     = apvts.getRawParameterValue(p + "freq");
+        c.gain     = apvts.getRawParameterValue(p + "gain");
+        c.q        = apvts.getRawParameterValue(p + "q");
+        c.type     = apvts.getRawParameterValue(p + "type");
+        c.slope    = apvts.getRawParameterValue(p + "slope");
+        c.channel  = apvts.getRawParameterValue(p + "channel");
+        c.dyn      = apvts.getRawParameterValue(p + "dyn");
+        c.dynThr   = apvts.getRawParameterValue(p + "dyn_thr");
+        c.dynAtk   = apvts.getRawParameterValue(p + "dyn_atk");
+        c.dynRel   = apvts.getRawParameterValue(p + "dyn_rel");
+        c.dynRat   = apvts.getRawParameterValue(p + "dyn_rat");
+        c.dynSc    = apvts.getRawParameterValue(p + "dyn_sc");
+    }
 }
 
 MantisVexQProcessor::~MantisVexQProcessor()
@@ -296,13 +317,11 @@ void MantisVexQProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::M
 
     if (parametersChanged.exchange(false))
     {
-        // Check if oversampling factor changed
-        int newChoice = (int)oversampleParam->load();
-        if (newChoice != lastOversampleChoice)
-            rebuildOversampler();
-
-        updateAllBands();
-        currentAutoGain = (*autoGainParam > 0.5f) ? computeAutoGain() : 0.0f;
+        const bool anyBandUpdated = updateDirtyBands();
+        if (anyBandUpdated && *autoGainParam > 0.5f)
+            currentAutoGain = computeAutoGain();
+        else if (!(*autoGainParam > 0.5f))
+            currentAutoGain = 0.f;
     }
 
     const int numChannels = buffer.getNumChannels();
@@ -450,16 +469,44 @@ void MantisVexQProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::M
 }
 
 //==============================================================================
-void MantisVexQProcessor::parameterChanged(const juce::String&, float)
+void MantisVexQProcessor::parameterChanged(const juce::String& paramID, float)
 {
-    parametersChanged.store(true);
-    if (*linPhaseParam > 0.5f)
+    // Mark only the changed band dirty rather than all 24
+    if (paramID.startsWith("band"))
+    {
+        int bandNum = 0;
+        for (int ci = 4; ci < paramID.length(); ++ci)
+        {
+            auto ch = paramID[ci];
+            if (ch == '_') break;
+            if (ch >= '0' && ch <= '9') bandNum = bandNum * 10 + (int)(ch - '0');
+        }
+        if (bandNum >= 1 && bandNum <= kNumBands)
+            bandsDirtyMask.fetch_or(1u << (bandNum - 1), std::memory_order_relaxed);
+    }
+
+    parametersChanged.store(true, std::memory_order_relaxed);
+
+    if (paramID == "oversample")
+        oversampleNeedsRebuild.store(true, std::memory_order_relaxed);
+
+    if (*linPhaseParam > 0.5f || paramID == "oversample")
         triggerAsyncUpdate();
 }
 
 void MantisVexQProcessor::handleAsyncUpdate()
 {
-    rebuildLinearPhaseIR();
+    const bool needsOS       = oversampleNeedsRebuild.exchange(false, std::memory_order_relaxed);
+    const bool needsLinPhase = (*linPhaseParam > 0.5f);
+
+    if (needsOS || needsLinPhase)
+    {
+        // suspendProcessing ensures audio thread is idle while we read bands[] / rebuild
+        suspendProcessing(true);
+        if (needsOS)       rebuildOversampler();
+        if (needsLinPhase) rebuildLinearPhaseIR();
+        suspendProcessing(false);
+    }
 }
 
 void MantisVexQProcessor::rebuildLinearPhaseIR()
@@ -525,38 +572,43 @@ void MantisVexQProcessor::rebuildLinearPhaseIR()
 //==============================================================================
 void MantisVexQProcessor::updateBand(int i)
 {
-    juce::String p = "band" + juce::String(i + 1) + "_";
+    const auto& c = bandParamCache[i];
 
     EQBandParams bp;
-    bp.enabled  = *apvts.getRawParameterValue(p + "enabled")  > 0.5f;
-    bp.bypassed = *apvts.getRawParameterValue(p + "bypassed") > 0.5f;
-    bp.freq     = *apvts.getRawParameterValue(p + "freq");
-    bp.gainDB   = *apvts.getRawParameterValue(p + "gain");
-    bp.q        = *apvts.getRawParameterValue(p + "q");
-    bp.type     = static_cast<FilterType>(static_cast<int>(*apvts.getRawParameterValue(p + "type")));
-    bp.order    = static_cast<int>(*apvts.getRawParameterValue(p + "slope")) + 1;
+    bp.enabled  = *c.enabled  > 0.5f;
+    bp.bypassed = *c.bypassed > 0.5f;
+    bp.freq     = *c.freq;
+    bp.gainDB   = *c.gain;
+    bp.q        = *c.q;
+    bp.type     = static_cast<FilterType>(static_cast<int>(*c.type));
+    bp.order    = static_cast<int>(*c.slope) + 1;
 
-    ChannelMode newMode = static_cast<ChannelMode>(
-        static_cast<int>(*apvts.getRawParameterValue(p + "channel")));
+    ChannelMode newMode = static_cast<ChannelMode>(static_cast<int>(*c.channel));
 
     bool resetNeeded = (bp.type != bands[i].getParams().type) || (newMode != channelModes[i]);
     bands[i].setParams(bp, currentSampleRate);
     channelModes[i] = newMode;
     if (resetNeeded) bands[i].reset();
 
-    // Update dynamic band
-    bool dynOn   = *apvts.getRawParameterValue(p + "dyn")     > 0.5f;
-    float thrDB  = *apvts.getRawParameterValue(p + "dyn_thr");
-    float atk    = *apvts.getRawParameterValue(p + "dyn_atk");
-    float rel    = *apvts.getRawParameterValue(p + "dyn_rel");
-    float rat    = *apvts.getRawParameterValue(p + "dyn_rat");
-
+    bool dynOn = *c.dyn > 0.5f;
     dynOnCache[i] = dynOn;
-    scOnCache [i] = dynOn && (*apvts.getRawParameterValue(p + "dyn_sc") > 0.5f);
+    scOnCache [i] = dynOn && (*c.dynSc > 0.5f);
     if (dynOn)
-        dynBands[i].prepare(bp.freq, bp.q, thrDB, atk, rel, rat, currentSampleRate);
+        dynBands[i].prepare(bp.freq, bp.q, *c.dynThr, *c.dynAtk, *c.dynRel, *c.dynRat, currentSampleRate);
     else
-        dynBlendState[i].store(1.f, std::memory_order_relaxed);  // no GR when dyn is off
+        dynBlendState[i].store(1.f, std::memory_order_relaxed);
+
+    bandUpdateSeq.fetch_add(1, std::memory_order_relaxed);
+}
+
+bool MantisVexQProcessor::updateDirtyBands()
+{
+    uint32_t mask = bandsDirtyMask.exchange(0, std::memory_order_acquire);
+    if (mask == 0) return false;
+    for (int i = 0; i < kNumBands; ++i)
+        if (mask & (1u << i))
+            updateBand(i);
+    return true;
 }
 
 void MantisVexQProcessor::updateAllBands()
@@ -570,9 +622,8 @@ bool MantisVexQProcessor::getNextPreSpectrumData(std::array<float, SpectrumAnaly
     std::array<float, SpectrumAnalyzer::kFFTSize> tmpR;
     bool gotL = spectrumPreL.getNextFFTData(dest);
     bool gotR = spectrumPreR.getNextFFTData(tmpR);
-    if (gotL && gotR)
-        for (int i = 0; i < SpectrumAnalyzer::kFFTSize; ++i)
-            dest[i] = (dest[i] + tmpR[i]) * 0.5f;
+    if      (gotL && gotR) for (int i = 0; i < SpectrumAnalyzer::kFFTSize; ++i) dest[i] = (dest[i] + tmpR[i]) * 0.5f;
+    else if (!gotL && gotR) dest = tmpR;
     return gotL || gotR;
 }
 
@@ -581,9 +632,8 @@ bool MantisVexQProcessor::getNextPostSpectrumData(std::array<float, SpectrumAnal
     std::array<float, SpectrumAnalyzer::kFFTSize> tmpR;
     bool gotL = spectrumPostL.getNextFFTData(dest);
     bool gotR = spectrumPostR.getNextFFTData(tmpR);
-    if (gotL && gotR)
-        for (int i = 0; i < SpectrumAnalyzer::kFFTSize; ++i)
-            dest[i] = (dest[i] + tmpR[i]) * 0.5f;
+    if      (gotL && gotR) for (int i = 0; i < SpectrumAnalyzer::kFFTSize; ++i) dest[i] = (dest[i] + tmpR[i]) * 0.5f;
+    else if (!gotL && gotR) dest = tmpR;
     return gotL || gotR;
 }
 

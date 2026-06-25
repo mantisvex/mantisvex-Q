@@ -44,7 +44,8 @@ public:
     // GUI thread accessors
     bool getNextPreSpectrumData (std::array<float, SpectrumAnalyzer::kFFTSize>& dest);
     bool getNextPostSpectrumData(std::array<float, SpectrumAnalyzer::kFFTSize>& dest);
-    double getCurrentSampleRate() const noexcept { return currentSampleRate; }
+    double   getCurrentSampleRate() const noexcept { return currentSampleRate; }
+    uint32_t getBandUpdateSeq()     const noexcept { return bandUpdateSeq.load(std::memory_order_relaxed); }
     const EQBand& getBand (int index) const { return bands[index]; }
     ChannelMode getChannelMode (int index) const noexcept { return channelModes[index]; }
     bool isBandBypassed (int index) const noexcept;
@@ -119,10 +120,28 @@ private:
     bool dynOnCache[kNumBands] {};  // updated on message thread in updateBand, read on audio thread
     bool scOnCache [kNumBands] {};  // sidechain-for-dyn toggle, same threading model as dynOnCache
 
-    std::atomic<bool>  parametersChanged { true };
-    std::atomic<bool>  irUpdateNeeded    { false };
-    double             currentSampleRate  = 44100.0;
-    float              currentAutoGain    = 0.0f;
+    std::atomic<bool>     parametersChanged { true };
+    std::atomic<bool>     irUpdateNeeded    { false };
+    double                currentSampleRate  = 44100.0;
+    float                 currentAutoGain    = 0.0f;
+
+    // Per-band cached raw parameter pointers — set once in constructor, read-only after
+    struct BandParamCache {
+        std::atomic<float>* enabled = nullptr; std::atomic<float>* bypassed = nullptr;
+        std::atomic<float>* freq    = nullptr; std::atomic<float>* gain     = nullptr;
+        std::atomic<float>* q       = nullptr; std::atomic<float>* type     = nullptr;
+        std::atomic<float>* slope   = nullptr; std::atomic<float>* channel  = nullptr;
+        std::atomic<float>* dyn     = nullptr; std::atomic<float>* dynThr   = nullptr;
+        std::atomic<float>* dynAtk  = nullptr; std::atomic<float>* dynRel   = nullptr;
+        std::atomic<float>* dynRat  = nullptr; std::atomic<float>* dynSc    = nullptr;
+    };
+    std::array<BandParamCache, kNumBands> bandParamCache {};
+
+    std::atomic<uint32_t>  bandsDirtyMask        { (1u << kNumBands) - 1u };
+    std::atomic<bool>      oversampleNeedsRebuild { false };
+    std::atomic<uint32_t>  bandUpdateSeq          { 0 };  // incremented each updateBand call
+
+    bool updateDirtyBands();  // returns true if any band was updated
 
     std::atomic<float>* outputGainParam    = nullptr;
     std::atomic<float>* autoGainParam     = nullptr;

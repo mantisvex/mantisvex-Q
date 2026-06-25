@@ -95,7 +95,10 @@ void EQDisplay::timerCallback()
     if (holdOutL > -0.1f) clipOutL = true;
     if (holdOutR > -0.1f) clipOutR = true;
 
-    curveCacheDirty = true;
+    // Only rebuild the curve cache when band coefficients actually changed
+    uint32_t seq = processor.getBandUpdateSeq();
+    if (seq != lastBandUpdateSeq) { curveCacheDirty = true; lastBandUpdateSeq = seq; }
+
     repaint();
 }
 
@@ -363,13 +366,11 @@ void EQDisplay::drawSpectrum(juce::Graphics& g)
     // Reference spectrum overlay — golden line, drawn when a REF has been captured
     if (refSpectrumValid)
     {
-        const float nyq  = static_cast<float>(processor.getCurrentSampleRate() * 0.5);
-        const int   rbins = SpectrumAnalyzer::kFFTSize / 2;
         juce::Path refPath;
         bool refStarted = false;
-        for (int i = 1; i < rbins; ++i)
+        for (int i = 1; i < bins; ++i)
         {
-            float binFreq = static_cast<float>(i) * nyq / static_cast<float>(rbins);
+            float binFreq = static_cast<float>(i) * nyquist / static_cast<float>(bins);
             if (binFreq < viewFreqMin || binFreq > viewFreqMax) continue;
             float x  = freqToX(binFreq);
             float db = juce::Decibels::gainToDecibels(std::max(refSpectrum[i], 1e-9f));
@@ -405,9 +406,10 @@ void EQDisplay::drawSpectrum(juce::Graphics& g)
 
 void EQDisplay::drawBandFills(juce::Graphics& g)
 {
-    const float wf    = static_cast<float>(getWidth());
-    const float hf    = static_cast<float>(getHeight());
-    const float zeroY = dbToY(0.f);
+    const float wf       = static_cast<float>(getWidth());
+    const float hf       = static_cast<float>(getHeight());
+    const float zeroY    = dbToY(0.f);
+    const bool  anySolo  = processor.isAnySoloed();   // cache once for all bands
 
     for (int b = 0; b < kNumBands; ++b)
     {
@@ -418,7 +420,7 @@ void EQDisplay::drawBandFills(juce::Graphics& g)
         bool isHovered  = (b == hoveredBand) && !isSelected;
         bool isBypassed = processor.isBandBypassed(b);
         bool isSoloed   = processor.isBandSoloed(b);
-        bool dimmed     = processor.isAnySoloed() && !isSoloed;
+        bool dimmed     = anySolo && !isSoloed;
 
         float fillAlpha = isSelected ? 0.85f : (isHovered ? 0.68f : 0.52f);
         float lineAlpha = isSelected ? 0.98f : (isHovered ? 0.80f : 0.50f);
@@ -1611,8 +1613,14 @@ void EQDisplay::runEQMatch(bool clearAll)
     int bandIdx = 0;
     for (const auto& pk : selected)
     {
-        while (bandIdx < kNumBands && processor.getBand(bandIdx).getParams().enabled)
+        // Read enabled state from APVTS (not DSP cache) — correctly reflects clearAll
+        // and bands placed earlier in this same call
+        while (bandIdx < kNumBands)
+        {
+            auto* ep = apvts.getRawParameterValue("band" + juce::String(bandIdx + 1) + "_enabled");
+            if (ep == nullptr || !(*ep > 0.5f)) break;
             bandIdx++;
+        }
         if (bandIdx >= kNumBands) break;
 
         float t    = (float)pk.j / (kAnalBins - 1);

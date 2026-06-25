@@ -46,7 +46,8 @@ private:
     std::array<std::array<float, 512>, 24> bandMagCache   {};
     std::array<std::array<float, 512>, 24> bandPhaseCache {};  // degrees, per-band
     std::array<float, 24>                  bandCenterMag  {};  // |H| at band centre, for GR readout
-    bool curveCacheDirty = true;
+    bool     curveCacheDirty    = true;
+    uint32_t lastBandUpdateSeq  = 0;
     void rebuildCurveCache();
 
     // Band clipboard for copy / paste
