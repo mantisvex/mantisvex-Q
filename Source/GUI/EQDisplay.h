@@ -136,6 +136,14 @@ private:
     bool spectrumFrozen  = false;
     bool spectrumAvg     = false;
     bool showTiltRef     = false;
+
+    // EQ match — reference spectrum capture + matching
+    std::array<float, SpectrumAnalyzer::kFFTSize> refSpectrum {};
+    bool refSpectrumValid = false;
+    juce::Rectangle<float> captureRefBtnBounds, eqMatchBtnBounds;
+
+    void captureReferenceSpectrum();
+    void runEQMatch (bool clearAll);
     juce::Rectangle<float> pianoRollBtnBounds;
     juce::Rectangle<float> gainScaleBtnBounds;
     juce::Rectangle<float> phaseBtnBounds;

@@ -360,6 +360,30 @@ void EQDisplay::drawSpectrum(juce::Graphics& g)
     if (showPost && spectrumPostInitialized)
         drawLayer(spectrumDataPost, spectrumPeakPost, 0.16f, 0.32f, 0.42f);
 
+    // Reference spectrum overlay — golden line, drawn when a REF has been captured
+    if (refSpectrumValid)
+    {
+        const float nyq  = static_cast<float>(processor.getCurrentSampleRate() * 0.5);
+        const int   rbins = SpectrumAnalyzer::kFFTSize / 2;
+        juce::Path refPath;
+        bool refStarted = false;
+        for (int i = 1; i < rbins; ++i)
+        {
+            float binFreq = static_cast<float>(i) * nyq / static_cast<float>(rbins);
+            if (binFreq < viewFreqMin || binFreq > viewFreqMax) continue;
+            float x  = freqToX(binFreq);
+            float db = juce::Decibels::gainToDecibels(std::max(refSpectrum[i], 1e-9f));
+            float y  = juce::jlimit(0.f, displayH, dbToY(juce::jlimit(-90.f, 6.f, db)));
+            if (!refStarted) { refPath.startNewSubPath(x, y); refStarted = true; }
+            else               refPath.lineTo(x, y);
+        }
+        if (refStarted)
+        {
+            g.setColour(juce::Colour(0x88ffcc44));
+            g.strokePath(refPath, juce::PathStrokeType(1.2f, juce::PathStrokeType::curved));
+        }
+    }
+
     // Pink-noise / -3dB-per-octave tilt reference line, anchored at 0dB @ 1kHz
     if (showTiltRef)
     {
@@ -1023,6 +1047,26 @@ void EQDisplay::drawGainScaleBtn(juce::Graphics& g)
     g.setColour(spectrumAvg ? juce::Colour(0xff44dd88) : juce::Colour(0xff3a3a6a));
     g.drawText("RMS", rmsAvgBtnBounds.toNearestInt(), juce::Justification::centred);
 
+    // REF capture — right of TILT
+    captureRefBtnBounds = juce::Rectangle<float>(170.f, gridH + 2.f, 28.f, 13.f);
+    g.setColour(refSpectrumValid ? juce::Colour(0xff0a0e18) : juce::Colour(0xff0c0d1c));
+    g.fillRect(captureRefBtnBounds);
+    g.setColour(refSpectrumValid ? juce::Colour(0xff2a3a60) : juce::Colour(0xff222240));
+    g.drawRect(captureRefBtnBounds, 0.6f);
+    g.setFont(juce::Font(juce::FontOptions().withName("Consolas").withHeight(8.f)));
+    g.setColour(refSpectrumValid ? juce::Colour(0xff66aaff) : juce::Colour(0xff3a3a6a));
+    g.drawText("REF", captureRefBtnBounds.toNearestInt(), juce::Justification::centred);
+
+    // MATCH — right of REF
+    eqMatchBtnBounds = juce::Rectangle<float>(202.f, gridH + 2.f, 36.f, 13.f);
+    g.setColour(juce::Colour(0xff0c0d1c));
+    g.fillRect(eqMatchBtnBounds);
+    g.setColour(refSpectrumValid ? juce::Colour(0xff3a3a6a) : juce::Colour(0xff1c1c1c));
+    g.drawRect(eqMatchBtnBounds, 0.6f);
+    g.setFont(juce::Font(juce::FontOptions().withName("Consolas").withHeight(8.f)));
+    g.setColour(refSpectrumValid ? juce::Colour(0xff88cc55) : juce::Colour(0xff2a2a2a));
+    g.drawText("MATCH", eqMatchBtnBounds.toNearestInt(), juce::Justification::centred);
+
     // Piano roll toggle — bottom-right (avoid OUT meter, leave 12px margin)
     const float w = static_cast<float>(getWidth());
     pianoRollBtnBounds = juce::Rectangle<float>(w - 38.f, gridH + 2.f, 36.f, 13.f);
@@ -1155,6 +1199,31 @@ void EQDisplay::mouseDown(const juce::MouseEvent& e)
     {
         showPianoRoll = !showPianoRoll;
         repaint();
+        return;
+    }
+    if (captureRefBtnBounds.contains(pos))
+    {
+        if (e.mods.isRightButtonDown())
+        {
+            refSpectrumValid = false;
+            repaint();
+        }
+        else
+        {
+            captureReferenceSpectrum();
+        }
+        return;
+    }
+    if (eqMatchBtnBounds.contains(pos) && refSpectrumValid)
+    {
+        juce::PopupMenu m;
+        m.addItem(1, "Match into empty bands");
+        m.addItem(2, "Clear all bands, then match");
+        m.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(this),
+            [this](int r) {
+                if (r == 1) runEQMatch(false);
+                else if (r == 2) runEQMatch(true);
+            });
         return;
     }
 
@@ -1452,5 +1521,126 @@ void EQDisplay::handleContextMenuResult(int result, int bi)
         if (auto* p = apvts.getParameter(prefix + "type"))    p->setValueNotifyingHost(0.f);
         if (auto* p = apvts.getParameter(prefix + "slope"))   p->setValueNotifyingHost(p->convertTo0to1(1.f));
         if (auto* p = apvts.getParameter(prefix + "channel")) p->setValueNotifyingHost(0.f);
+    }
+}
+
+//==============================================================================
+void EQDisplay::captureReferenceSpectrum()
+{
+    if (!spectrumInitialized) return;
+    refSpectrum = spectrumData;
+    refSpectrumValid = true;
+    repaint();
+}
+
+void EQDisplay::runEQMatch(bool clearAll)
+{
+    if (!refSpectrumValid || !spectrumInitialized) return;
+
+    const float sr      = (float)processor.getCurrentSampleRate();
+    const int   fftHalf = SpectrumAnalyzer::kFFTSize / 2;
+
+    static constexpr int   kAnalBins  = 120;
+    static constexpr float kFMin      = 30.f;
+    static constexpr float kFMax      = 16000.f;
+    const float octPerBin = std::log2(kFMax / kFMin) / (kAnalBins - 1);
+
+    // Build log-spaced dB difference (ref − current)
+    std::array<float, kAnalBins> diffDB {};
+    for (int j = 0; j < kAnalBins; ++j)
+    {
+        float t    = (float)j / (kAnalBins - 1);
+        float freq = kFMin * std::pow(kFMax / kFMin, t);
+        float binF = freq * (float)SpectrumAnalyzer::kFFTSize / sr;
+        int   lo   = juce::jlimit(1, fftHalf - 2, (int)binF);
+        float frac = binF - (float)lo;
+
+        auto interp = [&](const std::array<float, SpectrumAnalyzer::kFFTSize>& arr) -> float {
+            float lin = arr[lo] + frac * (arr[lo + 1] - arr[lo]);
+            return juce::Decibels::gainToDecibels(std::max(lin, 1e-9f));
+        };
+        diffDB[j] = juce::jlimit(-24.f, 24.f, interp(refSpectrum) - interp(spectrumData));
+    }
+
+    // Box-filter smooth (half-window 4 bins)
+    std::array<float, kAnalBins> smoothed {};
+    for (int j = 0; j < kAnalBins; ++j)
+    {
+        float sum = 0.f; int cnt = 0;
+        for (int k = juce::jmax(0, j - 4); k <= juce::jmin(kAnalBins - 1, j + 4); ++k, ++cnt)
+            sum += diffDB[k];
+        smoothed[j] = sum / cnt;
+    }
+
+    // Find local extrema above 1.5 dB significance threshold
+    struct Peak { int j; float dB; };
+    std::vector<Peak> candidates;
+    for (int j = 2; j < kAnalBins - 2; ++j)
+    {
+        float v = smoothed[j];
+        if (std::abs(v) < 1.5f) continue;
+        bool isMax = (v >= smoothed[j - 1] && v >= smoothed[j + 1]);
+        bool isMin = (v <= smoothed[j - 1] && v <= smoothed[j + 1]);
+        if (isMax || isMin) candidates.push_back({ j, v });
+    }
+
+    // Sort by magnitude, greedily select up to 8 peaks >= 0.3 octaves apart
+    std::sort(candidates.begin(), candidates.end(), [](const Peak& a, const Peak& b) {
+        return std::abs(a.dB) > std::abs(b.dB);
+    });
+
+    std::vector<Peak> selected;
+    for (const auto& c : candidates)
+    {
+        bool tooClose = false;
+        for (const auto& s : selected)
+            if ((float)std::abs(c.j - s.j) * octPerBin < 0.3f) { tooClose = true; break; }
+        if (!tooClose) selected.push_back(c);
+        if (selected.size() >= 8) break;
+    }
+    if (selected.empty()) return;
+
+    auto& apvts = processor.getAPVTS();
+    processor.getUndoManager().beginNewTransaction();
+
+    if (clearAll)
+        for (int b = 0; b < kNumBands; ++b)
+            if (auto* p = apvts.getParameter("band" + juce::String(b + 1) + "_enabled"))
+                p->setValueNotifyingHost(0.f);
+
+    int bandIdx = 0;
+    for (const auto& pk : selected)
+    {
+        while (bandIdx < kNumBands && processor.getBand(bandIdx).getParams().enabled)
+            bandIdx++;
+        if (bandIdx >= kNumBands) break;
+
+        float t    = (float)pk.j / (kAnalBins - 1);
+        float freq = juce::jlimit(20.f, 20000.f, kFMin * std::pow(kFMax / kFMin, t));
+
+        // Estimate Q from half-amplitude bandwidth
+        int   li   = pk.j, ri = pk.j;
+        float half = smoothed[pk.j] * 0.5f;
+        if (pk.dB > 0) { while (li > 0 && smoothed[li] > half) li--; while (ri < kAnalBins-1 && smoothed[ri] > half) ri++; }
+        else            { while (li > 0 && smoothed[li] < half) li--; while (ri < kAnalBins-1 && smoothed[ri] < half) ri++; }
+        float octBW = (float)(ri - li) * octPerBin;
+        float q = (octBW > 0.01f)
+                ? 1.f / (2.f * std::sinh(octBW * 0.5f * std::log(2.f)))
+                : 1.5f;
+        q = juce::jlimit(0.3f, 8.f, q);
+
+        juce::String px = "band" + juce::String(bandIdx + 1) + "_";
+
+        float freqNorm = std::log(freq / 20.f) / std::log(1000.f);
+        float gainNorm = (pk.dB + 30.f) / 60.f;
+        float qNorm    = std::log(q / 0.1f) / std::log(400.f);
+
+        if (auto* p = apvts.getParameter(px + "type"))    p->setValueNotifyingHost(p->convertTo0to1(0.f));
+        if (auto* p = apvts.getParameter(px + "freq"))    p->setValueNotifyingHost(juce::jlimit(0.f, 1.f, freqNorm));
+        if (auto* p = apvts.getParameter(px + "gain"))    p->setValueNotifyingHost(juce::jlimit(0.f, 1.f, gainNorm));
+        if (auto* p = apvts.getParameter(px + "q"))       p->setValueNotifyingHost(juce::jlimit(0.f, 1.f, qNorm));
+        if (auto* p = apvts.getParameter(px + "enabled")) p->setValueNotifyingHost(1.f);
+
+        bandIdx++;
     }
 }
