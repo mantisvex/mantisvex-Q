@@ -347,7 +347,7 @@ void MantisVexQProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::M
     }
     midiMessages.clear();
 
-    if (parametersChanged.exchange(false))
+    if (parametersChanged.exchange(false, std::memory_order_acq_rel))
     {
         const bool anyBandUpdated = updateDirtyBands();
         if (anyBandUpdated && *autoGainParam > 0.5f)
@@ -669,10 +669,6 @@ bool MantisVexQProcessor::getNextPostSpectrumData(std::array<float, SpectrumAnal
     return gotL || gotR;
 }
 
-bool MantisVexQProcessor::isBandBypassed(int i) const noexcept
-{
-    return *apvts.getRawParameterValue("band" + juce::String(i+1) + "_bypassed") > 0.5f;
-}
 
 void MantisVexQProcessor::setSoloBand(int i, bool solo) noexcept
 {

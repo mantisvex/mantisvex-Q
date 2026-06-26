@@ -48,7 +48,11 @@ public:
     uint32_t getBandUpdateSeq()     const noexcept { return bandUpdateSeq.load(std::memory_order_relaxed); }
     const EQBand& getBand (int index) const { return bands[index]; }
     ChannelMode getChannelMode (int index) const noexcept { return channelModes[index]; }
-    bool isBandBypassed   (int index) const noexcept;
+    bool isBandBypassed   (int index) const noexcept
+    {
+        auto* p = bandParamCache[index].bypassed;
+        return p != nullptr && *p > 0.5f;
+    }
     bool isBandDynEnabled (int index) const noexcept
     {
         auto* p = bandParamCache[index].dyn;

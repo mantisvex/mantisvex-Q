@@ -104,6 +104,7 @@ private:
     std::array<float, SpectrumAnalyzer::kFFTSize> spectrumPeakPost{};
     bool spectrumPostInitialized = false;
     static constexpr float kPeakDecay = 0.9985f;
+    int spectrumIdleFrames = 0;
 
     // Interaction state
     int  selectedBand   = -1;
@@ -164,6 +165,9 @@ private:
     float holdOutL= -90.f, holdOutR= -90.f;
     bool  clipInL  = false, clipInR  = false;
     bool  clipOutL = false, clipOutR = false;
+
+    // Reusable path objects — cleared and refilled each frame to avoid heap churn
+    juce::Path reusePathA, reusePathB, reusePathC;
 
     static constexpr float kNodeRadius  =  5.5f;
     static constexpr int   kCurvePoints = 512;

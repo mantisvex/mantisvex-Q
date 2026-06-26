@@ -40,22 +40,26 @@ void EQDisplay::pasteBand(int bi) { if (clipboard.valid) handleContextMenuResult
 void EQDisplay::timerCallback()
 {
     std::array<float, SpectrumAnalyzer::kFFTSize> newData;
+    bool gotNewPre = false, gotNewPost = false;
+
     if (!spectrumFrozen)
     {
-        if (processor.getNextPreSpectrumData(newData))
+        gotNewPre = processor.getNextPreSpectrumData(newData);
+        if (gotNewPre)
         {
             for (int i = 0; i < SpectrumAnalyzer::kFFTSize; ++i)
             {
                 float db = juce::Decibels::gainToDecibels(newData[i]);
                 if (spectrumAvg)
-                    spectrumData[i] = spectrumData[i] * 0.965f + 0.035f * db;  // slow exponential avg
+                    spectrumData[i] = spectrumData[i] * 0.965f + 0.035f * db;
                 else
-                    spectrumData[i] = std::max(spectrumData[i] * 0.84f, db);   // peak envelope
+                    spectrumData[i] = std::max(spectrumData[i] * 0.84f, db);
                 spectrumPeak[i] = std::max(spectrumPeak[i] * kPeakDecay, spectrumData[i]);
             }
             spectrumInitialized = true;
         }
-        if (processor.getNextPostSpectrumData(newData))
+        gotNewPost = processor.getNextPostSpectrumData(newData);
+        if (gotNewPost)
         {
             for (int i = 0; i < SpectrumAnalyzer::kFFTSize; ++i)
             {
@@ -70,7 +74,12 @@ void EQDisplay::timerCallback()
         }
     }
 
-    // Decay level meters — 30 Hz, ~1.5 dB/frame fast decay, 0.1 dB/frame hold
+    if (gotNewPre || gotNewPost)
+        spectrumIdleFrames = 0;
+    else if (spectrumIdleFrames < 300)
+        ++spectrumIdleFrames;
+
+    // Decay level meters — 30 Hz, ~1.5 dB/frame fast decay, 0.08 dB/frame hold
     auto toDb = [](float linear) { return 20.f * std::log10(std::max(linear, 1e-9f)); };
     auto decay = [](float& meter, float& hold, float raw) {
         float db = raw;
@@ -89,17 +98,24 @@ void EQDisplay::timerCallback()
     decay(mtrOutL, holdOutL, toDb(ol.L.load(std::memory_order_relaxed)));
     decay(mtrOutR, holdOutR, toDb(ol.R.load(std::memory_order_relaxed)));
 
-    // Latch clip indicators (cleared by clicking on the meter)
     if (holdInL  > -0.1f) clipInL  = true;
     if (holdInR  > -0.1f) clipInR  = true;
     if (holdOutL > -0.1f) clipOutL = true;
     if (holdOutR > -0.1f) clipOutR = true;
 
-    // Only rebuild the curve cache when band coefficients actually changed
     uint32_t seq = processor.getBandUpdateSeq();
     if (seq != lastBandUpdateSeq) { curveCacheDirty = true; lastBandUpdateSeq = seq; }
 
-    repaint();
+    // Only repaint when something visible has actually changed
+    bool needsRepaint = false;
+    needsRepaint |= spectrumIdleFrames < 200;   // spectrum/peaks still decaying
+    needsRepaint |= mtrInL  > -88.f || mtrInR  > -88.f;
+    needsRepaint |= mtrOutL > -88.f || mtrOutR > -88.f;
+    needsRepaint |= curveCacheDirty;
+    needsRepaint |= dragging || showGhost || hoveredBand >= 0;
+
+    if (needsRepaint)
+        repaint();
 }
 
 void EQDisplay::resized() { curveCacheDirty = true; bgCacheDirty = true; }
@@ -455,7 +471,9 @@ void EQDisplay::drawBandFills(juce::Graphics& g)
 
         juce::Colour col = isBypassed ? juce::Colour(0xff3a3a58) : getBandColor(b);
 
-        juce::Path curvePath, fillPath;
+        juce::Path& curvePath = reusePathA;
+        juce::Path& fillPath  = reusePathB;
+        curvePath.clear(); fillPath.clear();
         bool  started = false;
         float lastX   = 0.f;
         float peakY   = zeroY;
@@ -520,7 +538,7 @@ void EQDisplay::drawBandFills(juce::Graphics& g)
         if (dynOn)
         {
             float blend = processor.getDynBlend(b);
-            juce::Path shadowPath;
+            reusePathC.clear();
             bool shadowStarted = false;
 
             for (int i = 0; i < kCurvePoints; ++i)
@@ -530,14 +548,14 @@ void EQDisplay::drawBandFills(juce::Graphics& g)
                 float effDB      = juce::jlimit(viewDbMin - 6.f, viewDbMax + 6.f,
                                        20.f * std::log10(std::max(effLinear, 1e-9f)));
                 float y = dbToY(effDB);
-                if (!shadowStarted) { shadowPath.startNewSubPath(x, y); shadowStarted = true; }
-                else shadowPath.lineTo(x, y);
+                if (!shadowStarted) { reusePathC.startNewSubPath(x, y); shadowStarted = true; }
+                else reusePathC.lineTo(x, y);
             }
 
             if (shadowStarted)
             {
-                g.setColour(juce::Colour(0xff00ddaa).withAlpha(lineAlpha * 0.80f));
-                g.strokePath(shadowPath, juce::PathStrokeType(
+                g.setColour(juce::Colour(0xff00b896).withAlpha(lineAlpha * 0.80f));
+                g.strokePath(reusePathC, juce::PathStrokeType(
                     isSelected ? 2.2f : 1.5f, juce::PathStrokeType::curved));
             }
         }
@@ -550,7 +568,8 @@ void EQDisplay::drawEQCurve(juce::Graphics& g)
     const float dispH = static_cast<float>(getHeight()) - 18.f;
     const float zeroY = dbToY(0.f);
 
-    juce::Path curve;
+    juce::Path& curve = reusePathA;
+    curve.clear();
     float lastX = 0.f;
     float firstY = 0.f;
 

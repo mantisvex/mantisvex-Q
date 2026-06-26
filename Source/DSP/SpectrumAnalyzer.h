@@ -15,27 +15,32 @@ public:
           window     (kFFTSize, juce::dsp::WindowingFunction<float>::hann)
     {}
 
+    // Batch push: uses memcpy into the fifo, triggers FFT at the boundary.
+    // Eliminates N per-sample function calls and N atomic loads per block.
     void pushSamples(const float* data, int numSamples) noexcept
     {
-        for (int i = 0; i < numSamples; ++i)
-            pushSample(data[i]);
-    }
-
-    void pushSample(float sample) noexcept
-    {
-        if (fifoIndex >= kFFTSize)
+        int written = 0;
+        while (written < numSamples)
         {
-            if (!nextBlockReady.load(std::memory_order_relaxed))
+            int space   = kFFTSize - fifoIndex;
+            int toCopy  = std::min(space, numSamples - written);
+            std::memcpy(fifo.data() + fifoIndex, data + written, (size_t)toCopy * sizeof(float));
+            fifoIndex += toCopy;
+            written   += toCopy;
+
+            if (fifoIndex >= kFFTSize)
             {
-                std::fill(fftData.begin(), fftData.end(), 0.0f);
-                std::copy(fifo.begin(), fifo.end(), fftData.begin());
-                window.multiplyWithWindowingTable(fftData.data(), kFFTSize);
-                forwardFFT.performFrequencyOnlyForwardTransform(fftData.data());
-                nextBlockReady.store(true, std::memory_order_release);
+                if (!nextBlockReady.load(std::memory_order_relaxed))
+                {
+                    std::fill(fftData.begin(), fftData.end(), 0.0f);
+                    std::copy(fifo.begin(), fifo.end(), fftData.begin());
+                    window.multiplyWithWindowingTable(fftData.data(), kFFTSize);
+                    forwardFFT.performFrequencyOnlyForwardTransform(fftData.data());
+                    nextBlockReady.store(true, std::memory_order_release);
+                }
+                fifoIndex = 0;
             }
-            fifoIndex = 0;
         }
-        fifo[static_cast<size_t>(fifoIndex++)] = sample;
     }
 
     // Call from GUI thread. Returns true if new data was available.
