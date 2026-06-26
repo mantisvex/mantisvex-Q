@@ -42,13 +42,18 @@ private:
     float dbToY   (float db)   const noexcept;
     float yToDb   (float y)    const noexcept;
 
-    // Curve cache — rebuilt once per timer tick and on freq-axis zoom
+    // Curve cache — rebuilt only when band params change
     std::array<std::array<float, 512>, 24> bandMagCache   {};
     std::array<std::array<float, 512>, 24> bandPhaseCache {};  // degrees, per-band
     std::array<float, 24>                  bandCenterMag  {};  // |H| at band centre, for GR readout
+    std::array<float, 512>                 totalMagCache  {};  // combined magnitude, for drawEQCurve
     bool     curveCacheDirty    = true;
     uint32_t lastBandUpdateSeq  = 0;
     void rebuildCurveCache();
+
+    // Background + grid offscreen cache — rebuilt only on resize / zoom change
+    juce::Image bgCache;
+    bool bgCacheDirty = true;
 
     // Band clipboard for copy / paste
     struct BandClipboard {

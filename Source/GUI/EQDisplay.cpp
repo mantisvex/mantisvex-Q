@@ -7,8 +7,8 @@ namespace Colors {
     static const juce::Colour BG2        { 0xff0a0b16 };
     static const juce::Colour Grid       { 0x0aaaaacc };
     static const juce::Colour GridMajor  { 0x0daaaacc };
-    static const juce::Colour GridZero   { 0x1c5599ee };
-    static const juce::Colour GridText   { 0xff2a2a4e };
+    static const juce::Colour GridZero   { 0x285599ee };
+    static const juce::Colour GridText   { 0xff3e3e66 };
     static const juce::Colour SpecBase   { 0xff00b896 };
     static const juce::Colour SpecPeak   { 0xff40e8b8 };
     static const juce::Colour Ghost      { 0x5588bbff };
@@ -102,7 +102,7 @@ void EQDisplay::timerCallback()
     repaint();
 }
 
-void EQDisplay::resized() { curveCacheDirty = true; }
+void EQDisplay::resized() { curveCacheDirty = true; bgCacheDirty = true; }
 
 void EQDisplay::rebuildCurveCache()
 {
@@ -129,6 +129,19 @@ void EQDisplay::rebuildCurveCache()
             static_cast<double>(processor.getBand(b).getParams().freq), fs);
         bandCenterMag[b] = static_cast<float>(std::abs(Hc));
     }
+    // Combined magnitude for drawEQCurve — avoids the 512×24 inner loop every frame
+    for (int i = 0; i < kCurvePoints; ++i)
+    {
+        float total = 1.f;
+        for (int b = 0; b < kNumBands; ++b)
+        {
+            const auto& bp = processor.getBand(b).getParams();
+            if (!bp.enabled || bp.bypassed) continue;
+            total *= bandMagCache[b][i];
+        }
+        totalMagCache[i] = total;
+    }
+
     curveCacheDirty = false;
 }
 
@@ -160,6 +173,7 @@ void EQDisplay::zoomFreqAxis(float pivotX, float factor)
     viewFreqMin = juce::jlimit(10.f,    pivotFreq * 0.99f, lo);
     viewFreqMax = juce::jlimit(pivotFreq * 1.01f, 24000.f, hi);
     curveCacheDirty = true;
+    bgCacheDirty    = true;
 }
 
 void EQDisplay::zoomDbAxis(float factor)
@@ -169,6 +183,7 @@ void EQDisplay::zoomDbAxis(float factor)
     half = juce::jlimit(3.f, 36.f, half);
     viewDbMin = mid - half;
     viewDbMax = mid + half;
+    bgCacheDirty = true;
 }
 
 void EQDisplay::resetZoom()
@@ -178,14 +193,25 @@ void EQDisplay::resetZoom()
     viewDbMin   =   -30.f;
     viewDbMax   =    30.f;
     curveCacheDirty = true;
+    bgCacheDirty    = true;
 }
 
 //==============================================================================
 void EQDisplay::paint(juce::Graphics& g)
 {
     if (curveCacheDirty) rebuildCurveCache();
-    drawBackground(g);
-    drawGrid(g);
+
+    // Background + grid: rendered to an offscreen image, rebuilt only on resize/zoom
+    if (bgCacheDirty || bgCache.getWidth() != getWidth() || bgCache.getHeight() != getHeight())
+    {
+        bgCache = juce::Image(juce::Image::ARGB, getWidth(), getHeight(), true);
+        juce::Graphics bg(bgCache);
+        drawBackground(bg);
+        drawGrid(bg);
+        bgCacheDirty = false;
+    }
+    g.drawImageAt(bgCache, 0, 0);
+
     if (showPianoRoll) drawPianoRoll(g);
     if (spectrumInitialized) drawSpectrum(g);
     drawBandFills(g);
@@ -422,8 +448,8 @@ void EQDisplay::drawBandFills(juce::Graphics& g)
         bool isSoloed   = processor.isBandSoloed(b);
         bool dimmed     = anySolo && !isSoloed;
 
-        float fillAlpha = isSelected ? 0.52f : (isHovered ? 0.32f : 0.18f);
-        float lineAlpha = isSelected ? 0.88f : (isHovered ? 0.68f : 0.42f);
+        float fillAlpha = isSelected ? 0.44f : (isHovered ? 0.24f : 0.12f);
+        float lineAlpha = isSelected ? 0.85f : (isHovered ? 0.62f : 0.38f);
         if (isBypassed) { fillAlpha *= 0.25f; lineAlpha *= 0.25f; }
         if (dimmed)     { fillAlpha *= 0.18f; lineAlpha *= 0.18f; }
 
@@ -490,8 +516,7 @@ void EQDisplay::drawBandFills(juce::Graphics& g)
             isSelected ? 2.0f : 1.4f, juce::PathStrokeType::curved));
 
         // Dynamic GR shadow — shows live effective position when DYN is active
-        bool dynOn = *processor.getAPVTS().getRawParameterValue(
-            "band" + juce::String(b + 1) + "_dyn") > 0.5f;
+        bool dynOn = processor.isBandDynEnabled(b);
         if (dynOn)
         {
             float blend = processor.getDynBlend(b);
@@ -521,30 +546,46 @@ void EQDisplay::drawBandFills(juce::Graphics& g)
 
 void EQDisplay::drawEQCurve(juce::Graphics& g)
 {
-    const float wf = static_cast<float>(getWidth());
+    const float wf    = static_cast<float>(getWidth());
+    const float dispH = static_cast<float>(getHeight()) - 18.f;
+    const float zeroY = dbToY(0.f);
 
     juce::Path curve;
+    float lastX = 0.f;
+    float firstY = 0.f;
 
     for (int i = 0; i < kCurvePoints; ++i)
     {
-        float x        = static_cast<float>(i) / (kCurvePoints - 1) * wf;
-        float totalMag = 1.f;
-        for (int b = 0; b < kNumBands; ++b)
-        {
-            const auto& p = processor.getBand(b).getParams();
-            if (!p.enabled || p.bypassed) continue;
-            totalMag *= bandMagCache[b][i];
-        }
+        float x  = static_cast<float>(i) / (kCurvePoints - 1) * wf;
         float db = juce::jlimit(viewDbMin - 6.f, viewDbMax + 6.f,
-                       20.f * std::log10(std::max(totalMag, 1e-9f)));
+                       20.f * std::log10(std::max(totalMagCache[i], 1e-9f)));
         float y  = dbToY(db);
 
-        if (i == 0) curve.startNewSubPath(x, y);
-        else        curve.lineTo(x, y);
+        if (i == 0) { curve.startNewSubPath(x, y); firstY = y; }
+        else          curve.lineTo(x, y);
+        lastX = x;
     }
 
     if (curve.isEmpty()) return;
 
+    // Gradient fill between curve and 0dB line — signature Pro-Q look
+    // Transparent at 0dB, teal-tinted at boost/cut extremes
+    {
+        juce::Path fill = curve;
+        fill.lineTo(lastX, zeroY);
+        fill.lineTo(0.f,   zeroY);
+        fill.closeSubPath();
+
+        juce::ColourGradient grad(
+            Colors::SpecBase.withAlpha(0.16f), 0.f, 0.f,
+            Colors::SpecBase.withAlpha(0.16f), 0.f, dispH, false);
+        double zeroFrac = juce::jlimit(0.001, 0.999, (double)(zeroY / dispH));
+        grad.addColour(zeroFrac, Colors::SpecBase.withAlpha(0.0f));
+        g.setGradientFill(grad);
+        g.fillPath(fill);
+    }
+
+    // Layered glow strokes — soft outer to crisp inner core
     g.setColour(juce::Colour(0x09d8f8f0));
     g.strokePath(curve, juce::PathStrokeType(14.f, juce::PathStrokeType::curved));
     g.setColour(juce::Colour(0x16d0f2ea));
@@ -695,8 +736,7 @@ void EQDisplay::drawBandNodes(juce::Graphics& g)
         }
 
         // Dynamic EQ badge + GR activity ring
-        bool dynOn = *processor.getAPVTS().getRawParameterValue(
-            "band" + juce::String(i+1) + "_dyn") > 0.5f;
+        bool dynOn = processor.isBandDynEnabled(i);
         if (dynOn)
         {
             g.setFont(juce::Font(juce::FontOptions().withHeight(7.f).withStyle("Bold")));
@@ -877,7 +917,7 @@ void EQDisplay::drawLevelMeters(juce::Graphics& g)
 
     // Labels
     g.setFont(juce::Font(juce::FontOptions().withName("Consolas").withHeight(7.5f)));
-    g.setColour(juce::Colour(0xff2a2a50));
+    g.setColour(juce::Colour(0xff3e3e68));
     g.drawText("IN",  0, (int)(h * 0.5f) - 5, (int)(2.f * mW + gap) + 4, 10,
                juce::Justification::centred);
     g.drawText("OUT", (int)(w - 2.f * (mW + gap)) - 2, (int)(h * 0.5f) - 5,

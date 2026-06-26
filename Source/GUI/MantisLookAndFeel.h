@@ -8,7 +8,7 @@ namespace MantisColors {
     static const juce::Colour Surface { 0xff06070f };   // control surface
     static const juce::Colour Border  { 0xff0e0f1c };   // subtle border
     static const juce::Colour Dim     { 0xff272740 };   // inactive text
-    static const juce::Colour Accent  { 0xff00ddaa };   // neon teal â€" brand primary
+    static const juce::Colour Accent  { 0xff00b896 };   // teal brand primary
     static const juce::Colour Danger  { 0xffff3a3a };   // red (solo/danger)
     static const juce::Colour Warn    { 0xffffaa22 };   // amber (bypass / title)
 }

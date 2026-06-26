@@ -209,82 +209,114 @@ void MantisVexQProcessor::processBlockMinPhase(float* L, float* R, const float* 
 {
     const bool anyBandSoloed = isAnySoloed();
 
-    // Cache solo state once per block — avoid per-sample atomic reads
     bool soloCache[kNumBands] {};
     if (anyBandSoloed)
         for (int b = 0; b < kNumBands; ++b)
             soloCache[b] = soloStates[b].load(std::memory_order_relaxed);
 
-    for (int s = 0; s < numSamples; ++s)
+    // Bands-outer / samples-inner: each band's biquad state stays in L1 cache
+    // for the entire inner sample loop instead of being evicted every sample.
+    for (int b = 0; b < kNumBands; ++b)
     {
-        float sL = L[s], sR = R[s];
+        const auto& p = bands[b].getParams();
+        if (!p.enabled || p.bypassed) continue;
+        if (anyBandSoloed && !soloCache[b]) continue;
 
-        // Sidechain sample (falls back to main if SC bus not connected)
-        float scSL = (scL != nullptr) ? scL[s] : sL;
-        float scSR = (scR != nullptr) ? scR[s] : sR;
-
-        for (int b = 0; b < kNumBands; ++b)
+        if (dynOnCache[b])
         {
-            const auto& p = bands[b].getParams();
-            if (!p.enabled || p.bypassed) continue;
-            if (anyBandSoloed && !soloCache[b]) continue;
-
-            // Check dynamic EQ — use sidechain signal for detection if configured
-            float blend = 1.f;
-            if (dynOnCache[b])
+            // Dynamic EQ: blend varies per sample, must stay sample-by-sample.
+            // Atomic GUI update reduced from N stores/block to 1.
+            float lastBlend = 0.f;
+            for (int s = 0; s < numSamples; ++s)
             {
-                float detL = scOnCache[b] ? scSL : sL;
-                float detR = scOnCache[b] ? scSR : sR;
-                blend = dynBands[b].compute(detL, detR);
-                dynBlendState[b].store(blend, std::memory_order_relaxed);
+                float detL = scOnCache[b] ? scL[s] : L[s];
+                float detR = scOnCache[b] ? scR[s] : R[s];
+                float blend = dynBands[b].compute(detL, detR);
+                lastBlend = blend;
+                if (blend < 0.0001f) continue;
+
+                switch (channelModes[b])
+                {
+                    case ChannelMode::Stereo:
+                    {
+                        float fL = bands[b].processSampleL(L[s]);
+                        float fR = bands[b].processSampleR(R[s]);
+                        L[s] = L[s] + (fL - L[s]) * blend;
+                        R[s] = R[s] + (fR - R[s]) * blend;
+                        break;
+                    }
+                    case ChannelMode::Left:
+                    {
+                        float fL = bands[b].processSampleL(L[s]);
+                        L[s] = L[s] + (fL - L[s]) * blend;
+                        break;
+                    }
+                    case ChannelMode::Right:
+                    {
+                        float fR = bands[b].processSampleR(R[s]);
+                        R[s] = R[s] + (fR - R[s]) * blend;
+                        break;
+                    }
+                    case ChannelMode::Mid:
+                    {
+                        float m = (L[s] + R[s]) * 0.5f, sd = (L[s] - R[s]) * 0.5f;
+                        float fm = bands[b].processSampleL(m);
+                        float nm = m + (fm - m) * blend;
+                        L[s] = nm + sd; R[s] = nm - sd;
+                        break;
+                    }
+                    case ChannelMode::Side:
+                    {
+                        float m = (L[s] + R[s]) * 0.5f, sd = (L[s] - R[s]) * 0.5f;
+                        float fs = bands[b].processSampleR(sd);
+                        float ns = sd + (fs - sd) * blend;
+                        L[s] = m + ns; R[s] = m - ns;
+                        break;
+                    }
+                    default: break;
+                }
             }
-
-            if (blend < 0.0001f) continue;
-
+            dynBlendState[b].store(lastBlend, std::memory_order_relaxed);
+        }
+        else
+        {
+            // Static band: tight per-buffer loop — no branching, compiler can vectorize.
             switch (channelModes[b])
             {
                 case ChannelMode::Stereo:
-                {
-                    float fL = bands[b].processSampleL(sL);
-                    float fR = bands[b].processSampleR(sR);
-                    sL = sL + (fL - sL) * blend;
-                    sR = sR + (fR - sR) * blend;
+                    for (int s = 0; s < numSamples; ++s)
+                    {
+                        L[s] = bands[b].processSampleL(L[s]);
+                        R[s] = bands[b].processSampleR(R[s]);
+                    }
                     break;
-                }
                 case ChannelMode::Left:
-                {
-                    float fL = bands[b].processSampleL(sL);
-                    sL = sL + (fL - sL) * blend;
+                    for (int s = 0; s < numSamples; ++s)
+                        L[s] = bands[b].processSampleL(L[s]);
                     break;
-                }
                 case ChannelMode::Right:
-                {
-                    float fR = bands[b].processSampleR(sR);
-                    sR = sR + (fR - sR) * blend;
+                    for (int s = 0; s < numSamples; ++s)
+                        R[s] = bands[b].processSampleR(R[s]);
                     break;
-                }
                 case ChannelMode::Mid:
-                {
-                    float m = (sL + sR) * 0.5f, sd = (sL - sR) * 0.5f;
-                    float fm = bands[b].processSampleL(m);
-                    float nm = m + (fm - m) * blend;
-                    sL = nm + sd; sR = nm - sd;
+                    for (int s = 0; s < numSamples; ++s)
+                    {
+                        float m = (L[s] + R[s]) * 0.5f, sd = (L[s] - R[s]) * 0.5f;
+                        L[s] = bands[b].processSampleL(m) + sd;
+                        R[s] = L[s] - 2.f * sd;  // nm + sd=L[s], nm - sd = L[s] - 2*sd
+                    }
                     break;
-                }
                 case ChannelMode::Side:
-                {
-                    float m = (sL + sR) * 0.5f, sd = (sL - sR) * 0.5f;
-                    float fs = bands[b].processSampleR(sd);
-                    float ns = sd + (fs - sd) * blend;
-                    sL = m + ns; sR = m - ns;
+                    for (int s = 0; s < numSamples; ++s)
+                    {
+                        float m = (L[s] + R[s]) * 0.5f, sd = (L[s] - R[s]) * 0.5f;
+                        float ns = bands[b].processSampleR(sd);
+                        L[s] = m + ns; R[s] = m - ns;
+                    }
                     break;
-                }
                 default: break;
             }
         }
-
-        L[s] = sL;
-        R[s] = sR;
     }
 }
 

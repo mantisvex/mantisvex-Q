@@ -34,7 +34,7 @@ static void styleLabel(juce::Label& l, const juce::String& text)
 {
     l.setText(text, juce::dontSendNotification);
     l.setFont(juce::Font(juce::FontOptions().withName("Segoe UI").withHeight(9.5f)));
-    l.setColour(juce::Label::textColourId, juce::Colour(0xff5a5a88));
+    l.setColour(juce::Label::textColourId, juce::Colour(0xff7878a8));
     l.setJustificationType(juce::Justification::centred);
 }
 
@@ -71,10 +71,10 @@ BandControlStrip::BandControlStrip(MantisVexQProcessor& p) : processor(p)
     styleKnob(sliderFreq,   juce::Colour(0xff5c9eff), " Hz");
     styleKnob(sliderGain,   juce::Colour(0xffffaa22), " dB");
     styleKnob(sliderQ,      juce::Colour(0xff8bc34a), "");
-    styleKnob(sliderDynThr, juce::Colour(0xff00ddaa), " dB");
-    styleKnob(sliderDynAtk, juce::Colour(0xff00ddaa), " ms");
-    styleKnob(sliderDynRel, juce::Colour(0xff00ddaa), " ms");
-    styleKnob(sliderDynRat, juce::Colour(0xff00ddaa), ":1");
+    styleKnob(sliderDynThr, juce::Colour(0xff00b896), " dB");
+    styleKnob(sliderDynAtk, juce::Colour(0xff00b896), " ms");
+    styleKnob(sliderDynRel, juce::Colour(0xff00b896), " ms");
+    styleKnob(sliderDynRat, juce::Colour(0xff00b896), ":1");
     for (auto* s : { &sliderFreq, &sliderGain, &sliderQ,
                      &sliderDynThr, &sliderDynAtk, &sliderDynRel, &sliderDynRat })
         addAndMakeVisible(*s);
@@ -98,8 +98,8 @@ BandControlStrip::BandControlStrip(MantisVexQProcessor& p) : processor(p)
     styleBtn(btnEnabled, juce::Colour(0xff5c9eff), "ON");
     styleBtn(btnBypass,  juce::Colour(0xffffaa22), "BYP");
     styleBtn(btnSolo,    juce::Colour(0xffff5252), "SOLO");
-    styleBtn(btnDyn,     juce::Colour(0xff00ddaa), "DYN");
-    styleBtn(btnScDyn,   juce::Colour(0xff00ddaa), "SC");
+    styleBtn(btnDyn,     juce::Colour(0xff00b896), "DYN");
+    styleBtn(btnScDyn,   juce::Colour(0xff00b896), "SC");
 
     btnSolo.onClick = [this] {
         if (activeBand >= 0) processor.setSoloBand(activeBand, btnSolo.getToggleState());
@@ -412,37 +412,36 @@ void BandControlStrip::paint(juce::Graphics& g)
     {
         juce::Colour bc = getBandColor(activeBand);
 
-        g.setColour(bc.withAlpha(0.05f));
+        g.setColour(bc.withAlpha(0.08f));
         g.fillRect(0.f, (float)kTabH, w, h - kTabH);
 
         g.setColour(bc.withAlpha(0.90f));
         g.fillRect(0.f, (float)kTabH, w, 2.f);
-        g.setColour(bc.withAlpha(0.18f));
+        g.setColour(bc.withAlpha(0.22f));
         g.fillRect(0.f, (float)kTabH + 2.f, w, 4.f);
 
         g.setFont(juce::Font(juce::FontOptions().withName("Consolas").withHeight(9.5f)));
-        g.setColour(bc.withAlpha(0.45f));
+        g.setColour(bc.withAlpha(0.65f));
         g.drawText("BAND " + juce::String(activeBand + 1),
                    8, kTabH + 6, 60, 14, juce::Justification::centredLeft);
 
         // Divider between rows (midpoint of the controls area below tabs)
         const float midY = kTabH + (h - kTabH) * 0.5f;
-        g.setColour(juce::Colour(0xff111126));
+        g.setColour(juce::Colour(0xff181830));
         g.fillRect(0.f, midY - 0.5f, w, 1.f);
 
         // "DYN" section label in row 2 if dynamic is active
-        bool dynOn = activeBand >= 0 &&
-            *processor.getAPVTS().getRawParameterValue("band" + juce::String(activeBand+1) + "_dyn") > 0.5f;
+        bool dynOn = activeBand >= 0 && processor.isBandDynEnabled(activeBand);
         if (dynOn)
         {
             g.setFont(juce::Font(juce::FontOptions().withName("Consolas").withHeight(8.5f)));
-            g.setColour(juce::Colour(0xff00ddaa).withAlpha(0.40f));
+            g.setColour(juce::Colour(0xff00b896).withAlpha(0.55f));
             g.drawText("// dynamic", 8, (int)midY + 2, 80, 12, juce::Justification::centredLeft);
         }
         else
         {
             g.setFont(juce::Font(juce::FontOptions().withName("Consolas").withHeight(8.5f)));
-            g.setColour(juce::Colour(0xff1e1e38));
+            g.setColour(juce::Colour(0xff282840));
             g.drawText("// dynamic off", 8, (int)midY + 2, 90, 12, juce::Justification::centredLeft);
         }
     }
@@ -460,7 +459,7 @@ void BandControlStrip::paint(juce::Graphics& g)
     if (activeBand >= 0)
     {
         const int btnColRight = 14 + 50 + 8;
-        g.setColour(juce::Colour(0xff141428));
+        g.setColour(juce::Colour(0xff1e1e38));
         g.drawVerticalLine(btnColRight, 6.f, h - 6.f);
     }
 
@@ -497,9 +496,9 @@ void BandControlStrip::paint(juce::Graphics& g)
     if (activeBand >= 0 && dynValY > 0)
     {
         juce::String px = "band" + juce::String(activeBand + 1) + "_";
-        bool dynOn  = *processor.getAPVTS().getRawParameterValue(px + "dyn") > 0.5f;
-        juce::Colour dynCol = dynOn ? juce::Colour(0xff00ddaa).withAlpha(0.80f)
-                                    : juce::Colour(0xff222236);
+        bool dynOn  = processor.isBandDynEnabled(activeBand);
+        juce::Colour dynCol = dynOn ? juce::Colour(0xff00b896).withAlpha(0.80f)
+                                    : juce::Colour(0xff252540);
 
         g.setFont(juce::Font(juce::FontOptions().withName("Consolas").withHeight(9.5f)));
 
@@ -688,7 +687,7 @@ MantisVexQEditor::MantisVexQEditor(MantisVexQProcessor& p)
     infoLabel.setColour(juce::Label::textColourId, juce::Colour(0xff383858));
     infoLabel.setJustificationType(juce::Justification::centred);
     infoLabel.setText(
-        "click: add  //  drag: freq/gain  //  scroll: Q  //  dbl-click: delete  //  right-click: menu  //  Ctrl+C/V: copy/paste  //  E: on  B: byp  D: dyn  S: solo  //  right-click knob: MIDI learn",
+        "click: add  //  drag: freq/gain  //  scroll: Q  //  dbl-click: delete  //  E/B/D/S: toggle on/byp/dyn/solo  //  Ctrl+C/V: copy/paste  //  right-click: menu + MIDI learn",
         juce::dontSendNotification);
     addAndMakeVisible(infoLabel);
 
@@ -791,10 +790,16 @@ void MantisVexQEditor::paint(juce::Graphics& g)
 
     // Title bar
     {
-        juce::ColourGradient tbg(juce::Colour(0xff050610), 0.f, 0.f,
+        juce::ColourGradient tbg(juce::Colour(0xff060714), 0.f, 0.f,
                                   juce::Colour(0xff030409), 0.f, (float)kTitleH, false);
         g.setGradientFill(tbg);
         g.fillRect(0, 0, (int)w, kTitleH);
+
+        // Subtle left-edge accent wash behind the logo
+        juce::ColourGradient logoGlow(MantisColors::Accent.withAlpha(0.055f), 0.f, 0.f,
+                                      MantisColors::Accent.withAlpha(0.0f), 220.f, 0.f, false);
+        g.setGradientFill(logoGlow);
+        g.fillRect(0.f, 0.f, 220.f, (float)kTitleH);
     }
 
     g.setColour(MantisColors::Accent.withAlpha(0.50f));
@@ -860,7 +865,7 @@ void MantisVexQEditor::paint(juce::Graphics& g)
 
         // Sub comment
         g.setFont(fSub);
-        g.setColour(juce::Colour(0xff2a2a4a));
+        g.setColour(juce::Colour(0xff484870));
         g.drawText("// parametric equalizer", (int)bx, kTitleH - 13, 260, 12,
                    juce::Justification::centredLeft);
     }
@@ -868,13 +873,13 @@ void MantisVexQEditor::paint(juce::Graphics& g)
     g.setColour(juce::Colour(0xff080910));
     g.drawHorizontalLine((int)(h - kInfoH), 0.f, w);
 
-    g.setColour(juce::Colour(0xff181830));
+    g.setColour(juce::Colour(0xff141428));
     g.drawRect(getLocalBounds(), 1);
 
     // Corner tick-marks
     const float tkLen = 14.f, tkW = 1.5f;
     auto lb = getLocalBounds().toFloat();
-    g.setColour(MantisColors::Accent.withAlpha(0.65f));
+    g.setColour(MantisColors::Accent.withAlpha(0.75f));
     g.drawLine(lb.getX(),     lb.getY(),      lb.getX() + tkLen, lb.getY(),      tkW);
     g.drawLine(lb.getX(),     lb.getY(),      lb.getX(),         lb.getY() + tkLen, tkW);
     g.drawLine(lb.getRight(), lb.getY(),      lb.getRight() - tkLen, lb.getY(),   tkW);
