@@ -129,6 +129,16 @@ private:
     bool dynOnCache[kNumBands] {};  // updated on message thread in updateBand, read on audio thread
     bool scOnCache [kNumBands] {};  // sidechain-for-dyn toggle, same threading model as dynOnCache
 
+    // Per-band parameter smoothers — audio thread only, 30 ms ramp time
+    struct BandSmoother {
+        juce::SmoothedValue<float, juce::ValueSmoothingTypes::Multiplicative> freq { 1000.f };
+        juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>         gain { 0.f };
+        juce::SmoothedValue<float, juce::ValueSmoothingTypes::Multiplicative> q    { 0.707f };
+        bool isRamping() const noexcept { return freq.isSmoothing() || gain.isSmoothing() || q.isSmoothing(); }
+    };
+    std::array<BandSmoother, kNumBands>             bandSmoothers;
+    juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> outputGainSmoother { 1.f };
+
     std::atomic<bool>     parametersChanged { true };
     std::atomic<bool>     irUpdateNeeded    { false };
     double                currentSampleRate  = 44100.0;

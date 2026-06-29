@@ -19,6 +19,9 @@ static void styleKnob(juce::Slider& s, juce::Colour accent, const juce::String& 
     s.setColour(juce::Slider::textBoxOutlineColourId,      juce::Colours::transparentBlack);
     s.setColour(juce::Slider::textBoxHighlightColourId,    accent.withAlpha(0.25f));
     if (suffix.isNotEmpty()) s.setTextValueSuffix(suffix);
+    // Show value bubble during drag; Ctrl+click to type exact value
+    s.setPopupDisplayEnabled(true, true, nullptr);
+    s.setVelocityBasedMode(false);
 }
 
 static void styleCombo(juce::ComboBox& c)
@@ -75,6 +78,13 @@ BandControlStrip::BandControlStrip(MantisVexQProcessor& p) : processor(p)
     styleKnob(sliderDynAtk, juce::Colour(0xff00b896), " ms");
     styleKnob(sliderDynRel, juce::Colour(0xff00b896), " ms");
     styleKnob(sliderDynRat, juce::Colour(0xff00b896), ":1");
+    // Double-click resets to parameter default
+    sliderGain  .setDoubleClickReturnValue(true,   0.0);
+    sliderQ     .setDoubleClickReturnValue(true,   0.707);
+    sliderDynThr.setDoubleClickReturnValue(true, -18.0);
+    sliderDynAtk.setDoubleClickReturnValue(true,  10.0);
+    sliderDynRel.setDoubleClickReturnValue(true, 100.0);
+    sliderDynRat.setDoubleClickReturnValue(true,   4.0);
     for (auto* s : { &sliderFreq, &sliderGain, &sliderQ,
                      &sliderDynThr, &sliderDynAtk, &sliderDynRel, &sliderDynRat })
         addAndMakeVisible(*s);

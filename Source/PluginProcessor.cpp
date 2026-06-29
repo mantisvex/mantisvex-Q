@@ -184,6 +184,24 @@ void MantisVexQProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 
     dryBuf.setSize(2, samplesPerBlock, false, true, true);
 
+    // Snap smoothers to current param values BEFORE updateAllBands, so updateBand's
+    // getCurrentValue() reads correct positions on first call.
+    static constexpr double kSmoothSec = 0.030;
+    for (int i = 0; i < kNumBands; ++i)
+    {
+        auto& sm = bandSmoothers[i];
+        auto& c  = bandParamCache[i];
+        sm.freq.reset(sampleRate, kSmoothSec);
+        sm.gain.reset(sampleRate, kSmoothSec);
+        sm.q.reset   (sampleRate, kSmoothSec);
+        sm.freq.setCurrentAndTargetValue(c.freq->load(std::memory_order_relaxed));
+        sm.gain.setCurrentAndTargetValue(c.gain->load(std::memory_order_relaxed));
+        sm.q.setCurrentAndTargetValue   (std::max(0.01f, c.q->load(std::memory_order_relaxed)));
+    }
+    const float outDB = outputGainParam ? outputGainParam->load(std::memory_order_relaxed) : 0.f;
+    outputGainSmoother.reset(sampleRate, kSmoothSec);
+    outputGainSmoother.setCurrentAndTargetValue(juce::Decibels::decibelsToGain(outDB));
+
     for (auto& b : bands)    b.reset();
     for (auto& d : dynBands) d.reset();
     updateAllBands();
@@ -361,6 +379,21 @@ void MantisVexQProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::M
     float* R = numChannels > 1 ? buffer.getWritePointer(1) : L;
     const int numSamples = buffer.getNumSamples();
 
+    // Advance band smoothers (native rate). Bands still ramping get updated coefficients.
+    for (int b = 0; b < kNumBands; ++b)
+    {
+        auto& sm = bandSmoothers[b];
+        if (sm.isRamping())
+        {
+            EQBandParams bp = bands[b].getParams();
+            bp.freq   = sm.freq.skip(numSamples);
+            bp.gainDB = sm.gain.skip(numSamples);
+            bp.q      = sm.q.skip(numSamples);
+            bands[b].setParams(bp, currentSampleRate);
+            bandUpdateSeq.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+
     if (L) spectrumPreL.pushSamples(L, numSamples);
     if (R && R != L) spectrumPreR.pushSamples(R, numSamples);
 
@@ -424,8 +457,23 @@ void MantisVexQProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::M
         if (L) processBlockMinPhase(L, R && R != L ? R : L, scL, scR, numSamples);
     }
 
-    const float totalGain = outputGainParam->load() + currentAutoGain;
-    buffer.applyGain(juce::Decibels::decibelsToGain(totalGain));
+    // Smoothed output gain — eliminates clicks on automation and auto-gain jumps
+    const float totalGainLin = juce::Decibels::decibelsToGain(
+        outputGainParam->load(std::memory_order_relaxed) + currentAutoGain);
+    outputGainSmoother.setTargetValue(totalGainLin);
+    if (outputGainSmoother.isSmoothing())
+    {
+        for (int s = 0; s < numSamples; ++s)
+        {
+            const float g = outputGainSmoother.getNextValue();
+            if (L) L[s] *= g;
+            if (R && R != L) R[s] *= g;
+        }
+    }
+    else
+    {
+        buffer.applyGain(outputGainSmoother.getCurrentValue());
+    }
 
     // Solo monitoring — bandpass at the soloed band's frequency when monitor mode is on
     if (*monitorSoloParam > 0.5f && isAnySoloed())
@@ -606,21 +654,49 @@ void MantisVexQProcessor::updateBand(int i)
 {
     const auto& c = bandParamCache[i];
 
+    // Discrete params — applied instantly (no meaningful interpolation between types/modes)
+    const FilterType newType  = static_cast<FilterType>(static_cast<int>(*c.type));
+    const int        newOrder = static_cast<int>(*c.slope) + 1;
+    const ChannelMode newMode = static_cast<ChannelMode>(static_cast<int>(*c.channel));
+    const bool newEnabled  = *c.enabled  > 0.5f;
+    const bool newBypassed = *c.bypassed > 0.5f;
+
+    // Continuous params — update smoother targets; coefficients follow over 30 ms
+    auto& sm = bandSmoothers[i];
+    const float tFreq = c.freq->load(std::memory_order_relaxed);
+    const float tGain = c.gain->load(std::memory_order_relaxed);
+    const float tQ    = std::max(0.01f, c.q->load(std::memory_order_relaxed));
+
+    const bool typeOrModeChanged = (newType != bands[i].getParams().type)
+                                 || (newOrder != bands[i].getParams().order)
+                                 || (newMode != channelModes[i]);
+    if (typeOrModeChanged)
+    {
+        // Snap smoothers on discontinuous changes to avoid artefacts through undefined filter space
+        sm.freq.setCurrentAndTargetValue(tFreq);
+        sm.gain.setCurrentAndTargetValue(tGain);
+        sm.q.setCurrentAndTargetValue   (tQ);
+    }
+    else
+    {
+        sm.freq.setTargetValue(tFreq);
+        sm.gain.setTargetValue(tGain);
+        sm.q.setTargetValue   (tQ);
+    }
+
+    // Build params from current smoothed position (ramp begins next block)
     EQBandParams bp;
-    bp.enabled  = *c.enabled  > 0.5f;
-    bp.bypassed = *c.bypassed > 0.5f;
-    bp.freq     = *c.freq;
-    bp.gainDB   = *c.gain;
-    bp.q        = *c.q;
-    bp.type     = static_cast<FilterType>(static_cast<int>(*c.type));
-    bp.order    = static_cast<int>(*c.slope) + 1;
+    bp.enabled  = newEnabled;
+    bp.bypassed = newBypassed;
+    bp.freq     = sm.freq.getCurrentValue();
+    bp.gainDB   = sm.gain.getCurrentValue();
+    bp.q        = sm.q.getCurrentValue();
+    bp.type     = newType;
+    bp.order    = newOrder;
 
-    ChannelMode newMode = static_cast<ChannelMode>(static_cast<int>(*c.channel));
-
-    bool resetNeeded = (bp.type != bands[i].getParams().type) || (newMode != channelModes[i]);
     bands[i].setParams(bp, currentSampleRate);
     channelModes[i] = newMode;
-    if (resetNeeded) bands[i].reset();
+    if (typeOrModeChanged) bands[i].reset();
 
     bool dynOn = *c.dyn > 0.5f;
     dynOnCache[i] = dynOn;
