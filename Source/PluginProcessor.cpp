@@ -144,8 +144,7 @@ MantisVexQProcessor::MantisVexQProcessor()
 MantisVexQProcessor::~MantisVexQProcessor()
 {
     cancelPendingUpdate();
-    for (int i = 0; i < kNumBands; ++i)
-    {
+    for (int i = 0; i < kNumBands; ++i) {
         juce::String p = "band" + juce::String(i + 1) + "_";
         for (auto& s : { "enabled","bypassed","freq","gain","q","type","slope","channel",
                          "dyn","dyn_thr","dyn_atk","dyn_rel","dyn_rat","dyn_sc" })
@@ -184,8 +183,6 @@ void MantisVexQProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 
     dryBuf.setSize(2, samplesPerBlock, false, true, true);
 
-    // Snap smoothers to current param values BEFORE updateAllBands, so updateBand's
-    // getCurrentValue() reads correct positions on first call.
     static constexpr double kSmoothSec = 0.030;
     for (int i = 0; i < kNumBands; ++i)
     {
@@ -208,13 +205,18 @@ void MantisVexQProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
 
     rebuildOversampler();
 
-    // Prepare linear phase convolution
-    juce::dsp::ProcessSpec spec;
-    spec.sampleRate       = sampleRate;
-    spec.maximumBlockSize = (juce::uint32)samplesPerBlock;
-    spec.numChannels      = 2;
-    linearPhaseConv.prepare(spec);
-    linearPhasePrepared = true;
+    cancelPendingUpdate();
+    {
+        const juce::ScopedLock sl (linPhaseSection);
+        linearPhasePrepared.store(false, std::memory_order_seq_cst);
+        linearPhaseConv = std::make_unique<juce::dsp::Convolution>();
+        juce::dsp::ProcessSpec spec;
+        spec.sampleRate       = sampleRate;
+        spec.maximumBlockSize = (juce::uint32)samplesPerBlock;
+        spec.numChannels      = 2;
+        linearPhaseConv->prepare(spec);
+        linearPhasePrepared.store(true, std::memory_order_seq_cst);
+    }
 
     if (*linPhaseParam > 0.5f)
         rebuildLinearPhaseIR();
@@ -247,8 +249,9 @@ void MantisVexQProcessor::processBlockMinPhase(float* L, float* R, const float* 
             float lastBlend = 0.f;
             for (int s = 0; s < numSamples; ++s)
             {
-                float detL = scOnCache[b] ? scL[s] : L[s];
-                float detR = scOnCache[b] ? scR[s] : R[s];
+                // Fall back to main signal if sidechain bus is not connected (null ptr guard)
+                float detL = (scOnCache[b] && scL) ? scL[s] : L[s];
+                float detR = (scOnCache[b] && scR) ? scR[s] : R[s];
                 float blend = dynBands[b].compute(detL, detR);
                 lastBlend = blend;
                 if (blend < 0.0001f) continue;
@@ -431,26 +434,17 @@ void MantisVexQProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::M
         }
     }
 
-    const bool useLinPhase = linearPhasePrepared && (*linPhaseParam > 0.5f);
+    const bool useLinPhase = linearPhasePrepared.load(std::memory_order_acquire) && (*linPhaseParam > 0.5f);
 
     if (useLinPhase)
     {
-        // Linear phase: run through convolution engine (DYN/SC not supported in lin-phase mode)
-        juce::dsp::AudioBlock<float> block(buffer);
-        juce::dsp::ProcessContextReplacing<float> ctx(block);
-        linearPhaseConv.process(ctx);
-    }
-    else if (oversampler && (int)oversampleParam->load() > 0)
-    {
-        // Oversampled min-phase
-        juce::dsp::AudioBlock<float> inputBlock(buffer);
-        auto osBlock = oversampler->processSamplesUp(inputBlock);
-
-        float* osL = osBlock.getChannelPointer(0);
-        float* osR = osBlock.getNumChannels() > 1 ? osBlock.getChannelPointer(1) : osL;
-        processBlockMinPhase(osL, osR, scL, scR, (int)osBlock.getNumSamples());
-
-        oversampler->processSamplesDown(inputBlock);
+        const juce::ScopedLock sl (linPhaseSection);
+        if (linearPhasePrepared.load(std::memory_order_acquire) && linearPhaseConv)
+        {
+            juce::dsp::AudioBlock<float> block(buffer);
+            juce::dsp::ProcessContextReplacing<float> ctx(block);
+            linearPhaseConv->process(ctx);
+        }
     }
     else
     {
@@ -551,7 +545,7 @@ void MantisVexQProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::M
 //==============================================================================
 void MantisVexQProcessor::parameterChanged(const juce::String& paramID, float)
 {
-    // Mark only the changed band dirty rather than all 24
+    // Extract band number from "bandN_suffix" IDs
     if (paramID.startsWith("band"))
     {
         int bandNum = 0;
@@ -583,15 +577,27 @@ void MantisVexQProcessor::handleAsyncUpdate()
     {
         // suspendProcessing ensures audio thread is idle while we read bands[] / rebuild
         suspendProcessing(true);
-        if (needsOS)       rebuildOversampler();
-        if (needsLinPhase) rebuildLinearPhaseIR();
+
+        // linPhaseSection serializes this block with prepareToPlay's reconstruction of
+        // linearPhaseConv, preventing a race between rebuild and pointer reset.
+        {
+            const juce::ScopedLock sl (linPhaseSection);
+            if (!linearPhasePrepared.load(std::memory_order_acquire))
+            {
+                suspendProcessing(false);
+                return;  // prepareToPlay invalidated the engine — bail
+            }
+            if (needsOS)       rebuildOversampler();
+            if (needsLinPhase) rebuildLinearPhaseIR();
+        }
+
         suspendProcessing(false);
     }
 }
 
 void MantisVexQProcessor::rebuildLinearPhaseIR()
 {
-    if (!linearPhasePrepared) return;
+    if (!linearPhasePrepared.load(std::memory_order_acquire)) return;
 
     static constexpr int kIROrder = 12;
     static constexpr int kIRSize  = 1 << kIROrder;  // 4096
@@ -609,7 +615,9 @@ void MantisVexQProcessor::rebuildLinearPhaseIR()
         for (int b = 0; b < kNumBands; ++b)
             H *= bands[b].getFrequencyResponse(freq, currentSampleRate);
 
+        // Clamp: near-pole frequencies can produce Inf/NaN which would corrupt the IR
         float mag = (float)std::abs(H);
+        if (!std::isfinite(mag) || mag > 64.f) mag = 1.f;
         spectrum[k * 2]     = mag;
         spectrum[k * 2 + 1] = 0.f;
     }
@@ -636,10 +644,13 @@ void MantisVexQProcessor::rebuildLinearPhaseIR()
     wnd.multiplyWithWindowingTable(causalIR.data(), kIRSize);
 
     // Load into convolution engine
+    // Note: do NOT call prepare() here — that races with the Convolution's BG IR-build
+    // thread from the previous loadImpulseResponse. JUCE's internal lock-free message
+    // queue makes rapid loadImpulseResponse calls safe; the BG thread coalesces them.
     juce::AudioBuffer<float> irBuf(1, kIRSize);
     irBuf.copyFrom(0, 0, causalIR.data(), kIRSize);
 
-    linearPhaseConv.loadImpulseResponse(
+    linearPhaseConv->loadImpulseResponse(
         std::move(irBuf),
         currentSampleRate,
         juce::dsp::Convolution::Stereo::no,

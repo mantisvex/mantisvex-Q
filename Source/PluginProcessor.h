@@ -115,9 +115,12 @@ private:
     int  lastOversampleChoice = 0;
     int  maxBlockSize         = 512;
 
-    // Linear phase convolution
-    juce::dsp::Convolution linearPhaseConv;
-    bool linearPhasePrepared = false;
+    // Linear phase convolution — unique_ptr so prepareToPlay can reconstruct it,
+    // which destructs the old instance and joins its BG IR-build thread before
+    // the next prepare() call (prevents race between BG thread and prepare()).
+    std::unique_ptr<juce::dsp::Convolution> linearPhaseConv;
+    std::atomic<bool>      linearPhasePrepared { false };
+    juce::CriticalSection  linPhaseSection;   // serializes handleAsyncUpdate rebuild with prepareToPlay
 
     // A/B state
     juce::ValueTree abState[2];
