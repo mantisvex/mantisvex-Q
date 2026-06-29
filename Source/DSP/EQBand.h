@@ -45,7 +45,9 @@ struct BiquadState
         double y = c.b0 * x + s1;
         s1 = c.b1 * x - c.a1 * y + s2;
         s2 = c.b2 * x - c.a2 * y;
-        return y;
+        // Guard against biquad state blow-up (unstable coefficients near Nyquist)
+        if (!std::isfinite(s1) || !std::isfinite(s2)) { s1 = s2 = 0.0; }
+        return std::isfinite(y) ? y : x; // pass-through on NaN so audio isn't silenced
     }
 
     void reset() noexcept { s1 = s2 = 0.0; }

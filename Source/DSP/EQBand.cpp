@@ -22,7 +22,9 @@ void EQBand::reset() noexcept
 
 void EQBand::computeCoefficients(double sampleRate)
 {
-    const double freq = juce::jlimit(10.0, sampleRate * 0.499, static_cast<double>(params.freq));
+    // 0.45 instead of 0.499: keeps sin(w0) > 0.28 so alpha never collapses to ~0,
+    // preventing poles landing on the unit circle (marginal instability → NaN).
+    const double freq = juce::jlimit(10.0, sampleRate * 0.45, static_cast<double>(params.freq));
     const double gain = static_cast<double>(params.gainDB);
     const double q    = juce::jlimit(0.01, 40.0, static_cast<double>(params.q));
     numBiquads = 1;
@@ -85,6 +87,21 @@ void EQBand::computeCoefficients(double sampleRate)
         default:
             coeffs[0] = BiquadCoeffs{};
             break;
+    }
+
+    // Stability guard: if |a2| >= 1 the poles are on/outside the unit circle.
+    // Replace any unstable or non-finite section with unity (pass-through).
+    for (int i = 0; i < numBiquads; ++i)
+    {
+        auto& c = coeffs[i];
+        if (std::abs(c.a2) >= 0.9999 || !std::isfinite(c.a1) || !std::isfinite(c.a2)
+                                      || !std::isfinite(c.b0) || !std::isfinite(c.b1)
+                                      || !std::isfinite(c.b2))
+        {
+            c = BiquadCoeffs{};   // b0=1, all others 0 → pass-through
+            stateL[i].reset();
+            stateR[i].reset();
+        }
     }
 }
 
