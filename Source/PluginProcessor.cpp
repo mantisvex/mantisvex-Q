@@ -564,7 +564,7 @@ void MantisVexQProcessor::parameterChanged(const juce::String& paramID, float)
     if (paramID == "oversample")
         oversampleNeedsRebuild.store(true, std::memory_order_relaxed);
 
-    if (*linPhaseParam > 0.5f || paramID == "oversample")
+    if (*linPhaseParam > 0.5f || paramID == "oversample" || paramID == "lin_phase")
         triggerAsyncUpdate();
 }
 
@@ -573,26 +573,30 @@ void MantisVexQProcessor::handleAsyncUpdate()
     const bool needsOS       = oversampleNeedsRebuild.exchange(false, std::memory_order_relaxed);
     const bool needsLinPhase = (*linPhaseParam > 0.5f);
 
-    if (needsOS || needsLinPhase)
+    if (!needsOS && !needsLinPhase)
     {
-        // suspendProcessing ensures audio thread is idle while we read bands[] / rebuild
-        suspendProcessing(true);
-
-        // linPhaseSection serializes this block with prepareToPlay's reconstruction of
-        // linearPhaseConv, preventing a race between rebuild and pointer reset.
-        {
-            const juce::ScopedLock sl (linPhaseSection);
-            if (!linearPhasePrepared.load(std::memory_order_acquire))
-            {
-                suspendProcessing(false);
-                return;  // prepareToPlay invalidated the engine — bail
-            }
-            if (needsOS)       rebuildOversampler();
-            if (needsLinPhase) rebuildLinearPhaseIR();
-        }
-
-        suspendProcessing(false);
+        // Lin phase was turned off — revert PDC to the oversampler latency (or 0)
+        setLatencySamples(oversampler ? (int)oversampler->getLatencyInSamples() : 0);
+        return;
     }
+
+    // suspendProcessing ensures audio thread is idle while we read bands[] / rebuild
+    suspendProcessing(true);
+
+    // linPhaseSection serializes this block with prepareToPlay's reconstruction of
+    // linearPhaseConv, preventing a race between rebuild and pointer reset.
+    {
+        const juce::ScopedLock sl (linPhaseSection);
+        if (!linearPhasePrepared.load(std::memory_order_acquire))
+        {
+            suspendProcessing(false);
+            return;  // prepareToPlay invalidated the engine — bail
+        }
+        if (needsOS)       rebuildOversampler();
+        if (needsLinPhase) rebuildLinearPhaseIR();
+    }
+
+    suspendProcessing(false);
 }
 
 void MantisVexQProcessor::rebuildLinearPhaseIR()
@@ -779,14 +783,20 @@ float MantisVexQProcessor::computeAutoGain() const
     double weightedSum = 0.0, weightSum = 0.0;
     for (int i = 0; i < 128; ++i)
     {
-        double freq   = 20.0 * std::pow(20000.0 / 20.0, (double)i / 127.0);
+        double freq = 20.0 * std::pow(20000.0 / 20.0, (double)i / 127.0);
         std::complex<double> H = { 1.0, 0.0 };
         for (int b = 0; b < kNumBands; ++b)
             H *= bands[b].getFrequencyResponse(freq, currentSampleRate);
-        double db     = 20.0 * std::log10(std::max(std::abs(H), 1e-10));
-        double weight = 1.0 / freq;
-        weightedSum  += db * weight;
-        weightSum    += weight;
+        double db = 20.0 * std::log10(std::max(std::abs(H), 1e-10));
+
+        // A-weighting (IEC 61672): peaks at ~3.4 kHz, mirrors ear sensitivity
+        const double f2 = freq * freq;
+        const double Ra = 148693636.0 * f2 * f2
+                        / ((f2 +    424.36)
+                           * std::sqrt((f2 + 11599.29) * (f2 + 544496.41))
+                           * (f2 + 148693636.0));
+        weightedSum += db * Ra;
+        weightSum   += Ra;
     }
     return -(float)(weightedSum / weightSum);
 }
